@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+pymupdf
+pillow
+numpy
+python-multipart
+langchain
+langchain-community
+faiss-cpu
+openai
+tiktoken
+sentence-transformers
+transformers
+torch
+pydantic
+tqdm
