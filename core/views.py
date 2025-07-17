@@ -29,6 +29,8 @@ from langchain_openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Initialize ChromaDB client (simple local setup)
 chroma_client = chromadb.Client(chromadb.config.Settings(
@@ -103,13 +105,19 @@ def get_user_chroma_dir(user):
     return os.path.join("chroma_data", f"user_{user.id}")
 
 # --- File upload: extract, caption, embed, and store in per-user Chroma ---
-def process_and_store_file(user, file_path, collection_name):
+def process_and_store_file(user, file_path, collection_name, file_id=None):
     pages = extract_pdf_pages(file_path)
-    texts, metas = [], []
+    texts, metas, ids = [], [], []
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    chunk_idx = 0
     for p in pages:
         if p["text"].strip():
-            texts.append(p["text"])
-            metas.append({"type": "text", "page": p["page"]})
+            chunks = splitter.split_text(p["text"])
+            for chunk in chunks:
+                texts.append(chunk)
+                metas.append({"type": "text", "page": p["page"], "file_id": file_id})
+                ids.append(f"{file_id}_{chunk_idx}")
+                chunk_idx += 1
         for im in p["images"]:
             caption = describe_image(im)
             texts.append(caption)
@@ -117,18 +125,26 @@ def process_and_store_file(user, file_path, collection_name):
                 "type": "image_caption",
                 "page": p["page"],
                 "path": im,
-                "caption": caption
+                "caption": caption,
+                "file_id": file_id
             })
+            ids.append(f"{file_id}_{chunk_idx}")
+            chunk_idx += 1
     if not texts:
         raise ValueError("PDF contained no text or images.")
     user_chroma_dir = get_user_chroma_dir(user)
-    vs = Chroma.from_texts(
-        texts=texts,
-        embedding=text_emb,
-        metadatas=metas,
+    vs = Chroma(
         collection_name=collection_name,
+        embedding_function=text_emb,
         persist_directory=user_chroma_dir,
     )
+    batch_size = 100
+    for i in range(0, len(texts), batch_size):
+        vs.add_texts(
+            texts=texts[i:i+batch_size],
+            metadatas=metas[i:i+batch_size],
+            ids=ids[i:i+batch_size]
+        )
     vs.persist()
     print(f"[DEBUG] Stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
     for i, t in enumerate(texts[:3]):
@@ -144,17 +160,27 @@ def run_rag_query(user, query, collection_name, k=3):
         embedding_function=text_emb,
         collection_name=collection_name,
     )
+    prompt_template = (
+        "You are a helpful assistant. Use ONLY the context below to answer. "
+        "Cite page numbers for each fact. If unsure, say 'I don't know.'\n\n"
+        "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+    )
+    prompt = PromptTemplate(
+        template=prompt_template,
+        input_variables=["context", "question"]
+    )
     rag_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(model_name="gpt-4o-mini", temperature=0.2),
+        llm=ChatOpenAI(model_name="gpt-4.1-mini", temperature=0.2),
         retriever=vs.as_retriever(search_kwargs={"k": k}),
-        return_source_documents=True
+        return_source_documents=True,
+        chain_type_kwargs={"prompt": prompt}
     )
     result = rag_chain({"query": query})
     answer = result["result"]
     sources = result.get("source_documents", [])
     print(f"[DEBUG] Retrieved {len(sources)} source documents for user {user.id}")
     for i, doc in enumerate(sources[:3]):
-        print(f"[DEBUG] Source {i+1}: {doc.page_content[:100]}")
+        print(f"[DEBUG] Source {i+1}: {doc.page_content[:100]} (page: {doc.metadata.get('page')})")
     return answer, sources
 
 # --- Update run_rag_pipeline to return both answer and sources ---
@@ -195,7 +221,7 @@ class FileUploadView(APIView):
         file_obj = File.objects.create(user=user, file=uploaded_file, filename=filename, chroma_collection=collection_name)
         # Save file to disk for processing
         file_path = file_obj.file.path
-        process_and_store_file(user, file_path, collection_name)
+        process_and_store_file(user, file_path, collection_name, file_id=file_obj.id)
         return Response(FileSerializer(file_obj).data, status=201)
 
 class FileListView(APIView):
@@ -217,7 +243,8 @@ class FileDeleteView(APIView):
         # Remove from ChromaDB
         if file_obj.chroma_collection:
             collection = chroma_client.get_or_create_collection(file_obj.chroma_collection)
-            collection.delete(ids=[str(file_obj.id)])
+            # Delete all vectors with this file_id in metadata
+            collection.delete(where={"file_id": file_obj.id})
         # Delete file from storage and DB
         file_obj.file.delete(save=False)
         file_obj.delete()
