@@ -1,7 +1,7 @@
 chroma_data
 imgs
 media
-staticfiles/
+staticfiles
 m_rag_pipeline.py
 
 # Byte-compiled / optimized / DLL files
