@@ -43,7 +43,8 @@ blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image
 device = "cuda" if torch.cuda.is_available() else "cpu"
 blip_model.to(device)
 
-os.environ["OPENAI_API_KEY"] = "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"
+ os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+
 text_emb = OE(model="text-embedding-3-small")
 #text_emb = OE(model="text-embedding-3-small")
 image_emb = SentenceTransformer("clip-ViT-B-32")
