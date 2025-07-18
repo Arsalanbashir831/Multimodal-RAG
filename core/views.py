@@ -151,7 +151,7 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
         print(f"[DEBUG] Example doc {i+1}: {t[:100]}")
 
 # --- RAG query: load per-user Chroma and run RetrievalQA ---
-def run_rag_query(user, query, collection_name, k=3):
+def run_rag_query(user, query, collection_name, k=5):
     user_chroma_dir = get_user_chroma_dir(user)
     if not Path(user_chroma_dir).exists():
         return "No documents found for this user.", []
@@ -161,8 +161,8 @@ def run_rag_query(user, query, collection_name, k=3):
         collection_name=collection_name,
     )
     prompt_template = (
-        "You are a helpful assistant. Use ONLY the context below to answer. "
-        "Cite page numbers for each fact. If unsure, say 'I don't know.'\n\n"
+        "You are a helpful assistant. Make sence of the context and answer the question. "
+        "If unsure, say 'I don't know at end.'\n\n"
         "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
     prompt = PromptTemplate(
@@ -240,11 +240,16 @@ class FileDeleteView(APIView):
             file_obj = File.objects.get(pk=pk, user=request.user)
         except File.DoesNotExist:
             return Response({'error': 'File not found.'}, status=404)
-        # Remove from ChromaDB
+        # Remove from ChromaDB using LangChain Chroma vector store
         if file_obj.chroma_collection:
-            collection = chroma_client.get_or_create_collection(file_obj.chroma_collection)
-            # Delete all vectors with this file_id in metadata
-            collection.delete(where={"file_id": file_obj.id})
+            from langchain_community.vectorstores import Chroma
+            user_chroma_dir = get_user_chroma_dir(request.user)
+            vs = Chroma(
+                collection_name=file_obj.chroma_collection,
+                embedding_function=text_emb,
+                persist_directory=user_chroma_dir,
+            )
+            vs.delete(where={"file_id": file_obj.id})
         # Delete file from storage and DB
         file_obj.file.delete(save=False)
         file_obj.delete()
