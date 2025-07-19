@@ -3,4 +3,8 @@ _pycache_
 check
 *.pyc
 *.pyo  
-.env
+.envchroma_data
+imgs
+media
+staticfiles
+m_rag_pipeline.py
