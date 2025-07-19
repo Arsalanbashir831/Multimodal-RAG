@@ -26,11 +26,14 @@ import openai
 import re
 from pathlib import Path
 from langchain_openai import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.chat_models import ChatOpenAI
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # Initialize ChromaDB client (simple local setup)
 chroma_client = chromadb.Client(chromadb.config.Settings(
@@ -38,15 +41,12 @@ chroma_client = chromadb.Client(chromadb.config.Settings(
 ))
 
 # Load BLIP for image captioning
-processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", use_fast=True)
 blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").eval()
 device = "cuda" if torch.cuda.is_available() else "cpu"
 blip_model.to(device)
 
- os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
-
 text_emb = OE(model="text-embedding-3-small")
-#text_emb = OE(model="text-embedding-3-small")
 image_emb = SentenceTransformer("clip-ViT-B-32")
 
 # --- PDF and Image Processing ---
@@ -162,7 +162,7 @@ def run_rag_query(user, query, collection_name, k=5):
         collection_name=collection_name,
     )
     prompt_template = (
-        "You are a helpful assistant. Make sence of the context and answer the question. "
+        "You are a helpful assistant. Make sense of the context and answer the question. "
         "If unsure, say 'I don't know at end.'\n\n"
         "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
