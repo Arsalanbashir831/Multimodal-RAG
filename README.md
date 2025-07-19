@@ -29,7 +29,6 @@ M_RAG_APPC/
 ├── chroma_data/         # Per-user ChromaDB vector stores (ignored by git)
 ├── imgs/                # Extracted images from PDFs (ignored by git)
 ├── media/               # Uploaded files (ignored by git)
-├── staticfiles/         # Collected static files (ignored by git)
 ├── requierments.txt     # Python dependencies
 ├── README.md            # Project documentation
 └── manage.py            # Django management script
