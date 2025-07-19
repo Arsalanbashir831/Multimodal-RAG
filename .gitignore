@@ -1,9 +1,5 @@
 venv
-_pycache_
 check
-*.pyc
-*.pyo  
-.envchroma_data
 imgs
 media
 staticfiles
