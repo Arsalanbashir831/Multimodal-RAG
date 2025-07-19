@@ -2,5 +2,4 @@ venv
 check
 imgs
 media
-staticfiles
-m_rag_pipeline.py
+
