@@ -102,8 +102,12 @@ def build_embeddings(pages, text_batch_size=50):
     return text_vecs, texts, metadatas
 
 # --- Per-user Chroma directory helper ---
-def get_user_chroma_dir(user):
-    return os.path.join("chroma_data", f"user_{user.id}")
+def get_user_chroma_dir(user_or_id):
+    if isinstance(user_or_id, int) or isinstance(user_or_id, str):
+        user_id = user_or_id
+    else:
+        user_id = user_or_id.id
+    return os.path.join("chroma_data", f"user_{user_id}")
 
 # --- File upload: extract, caption, embed, and store in per-user Chroma ---
 def process_and_store_file(user, file_path, collection_name, file_id=None):
@@ -199,37 +203,241 @@ def get_chroma_collection_name(user):
 
 # Create your views here.
 
+from supabase import create_client, Client
+import os
+
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 class RegisterView(APIView):
     def post(self, request):
-        serializer = UserRegistrationSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({'message': 'User registered successfully.'}, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data
+        email = data.get('email')
+        password = data.get('password')
+        username = data.get('username')
+
+        if not email or not password or not username:
+            return Response({'error': 'Email, password, and username are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if user already exists by trying to sign in
+        try:
+            sign_in_response = supabase.auth.sign_in_with_password({'email': email, 'password': password})
+            # If sign_in is successful, user exists, ask to login
+            if sign_in_response.user:
+                return Response({'error': 'User already registered. Please login instead.'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            # If login fails, likely user not registered yet, proceed to sign up
+            pass
+        
+        # Check if user already exists by trying to sign in
+        try:
+            sign_in_response = supabase.auth.sign_in_with_password({
+                'email': email,
+                'password': password
+            })
+            if sign_in_response.user is not None:
+                return Response({'error': 'User already registered, please login instead.'}, status=status.HTTP_400_BAD_REQUEST)
+        except AuthApiError as e:
+            # If sign in fails due to user not existing, proceed with registration
+            if 'Invalid login credentials' not in str(e):
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        # Proceed with sign up
+        try:
+            response = supabase.auth.sign_up(
+                {
+                    'email': email,
+                    'password': password,
+                    'options': {'data': {'username': username}}
+                }
+            )
+        except AuthApiError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if hasattr(response, 'error') and response.error:
+            return Response({'error': str(response.error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({'message': 'User registered successfully. Please verify your email.'}, status=status.HTTP_201_CREATED)
+
+
+class LoginView(APIView):
+    def post(self, request):
+        data = request.data
+        email = data.get('email')
+        password = data.get('password')
+
+        if not email or not password:
+            return Response({'error': 'Email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            response = supabase.auth.sign_in_with_password(
+                {'email': email, 'password': password}
+            )
+        except Exception as e:
+            return Response({'error': 'Failed to login. ' + str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if hasattr(response, 'error') and response.error:
+            return Response({'error': str(response.error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = response.user
+        if not user:
+            return Response({'error': 'Invalid login credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        return Response({
+            'access_token': response.session.access_token,
+            'refresh_token': response.session.refresh_token,
+            'user': {'email': user.email, 'id': user.id}
+        }, status=status.HTTP_200_OK)
+
+
+class PasswordResetView(APIView):
+    def post(self, request):
+        email = request.data.get('email')
+        if not email:
+            return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Trigger password reset email through Supabase
+        response = supabase.auth.reset_password_for_email(email)
+
+        if hasattr(response, 'error') and response.error:
+            return Response({'error': str(response.error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({'message': 'Password reset email sent'}, status=status.HTTP_200_OK)
+
+
+class PasswordResetConfirmView(APIView):
+    def post(self, request):
+        token = request.data.get('token')
+        new_password = request.data.get('new_password')
+        if not token or not new_password:
+            return Response({'error': 'Token and new password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        import requests
+        from django.conf import settings
+
+        project_url = getattr(settings, 'SUPABASE_URL', '').rstrip('/')
+        api_key = getattr(settings, 'SUPABASE_SERVICE_ROLE_KEY', '') or getattr(settings, 'SUPABASE_ANON_KEY', '')
+        if not project_url or not api_key:
+            return Response({'error': 'Supabase configuration missing.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        url = f'{project_url}/auth/v1/user'
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'apikey': api_key,
+            'Content-Type': 'application/json'
+        }
+        payload = {'password': new_password}
+
+        try:
+            resp = requests.put(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                return Response({'error': resp.json().get('message', 'Failed to update password')}, status=resp.status_code)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({'message': 'Password has been reset successfully.'}, status=status.HTTP_200_OK)
+
+from gotrue.errors import AuthApiError
+
+class VerifyOtpView(APIView):
+
+    def post(self, request):
+        access_token = request.data.get('access_token')
+        if not access_token:
+            return Response({'error': 'Access token is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user_response = supabase.auth.get_user(access_token)
+        except AuthApiError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = user_response.user
+        if not user:
+            return Response({'error': 'Invalid token or user not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if user.user_metadata.get('email_confirmed'):
+            return Response({'message': 'Email verified'}, status=status.HTTP_200_OK)
+        else:
+            return Response({'message': 'Email not verified'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+import uuid
+import os
 
 class FileUploadView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        uploaded_file = request.FILES.get('file')
+        uploaded_file = request.FILES.get("file")
         if not uploaded_file:
-            return Response({'error': 'No file provided.'}, status=400)
-        filename = uploaded_file.name
+            return Response({"error": "No file provided."}, status=400)
+
         user = request.user
-        collection_name = get_chroma_collection_name(user)
-        # Save file in DB
-        file_obj = File.objects.create(user=user, file=uploaded_file, filename=filename, chroma_collection=collection_name)
-        # Save file to disk for processing
+        filename = uploaded_file.name
+
+        # Save file locally first so PyMuPDF can read it
+        file_obj = File.objects.create(user=user, file=uploaded_file, filename=filename)
         file_path = file_obj.file.path
+
+        # Get user access token to initialize supabase client for this request
+        access_token = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            access_token = auth_header[len("Bearer "):].strip()
+
+        if access_token is None:
+            return Response({"error": "Authorization token missing"}, status=401)
+
+        from supabase import create_client
+
+        supabase_user = create_client(SUPABASE_URL, access_token)
+
+        # Upload file to Supabase Storage using user-specific folder with user's supabase client
+        try:
+            file_key = f"user_{user.id}/{uuid.uuid4()}_{filename}"
+            with open(file_path, "rb") as f:
+                supabase_user.storage.from_('user-uploads').upload(file_key, f)
+            # Save the storage key to the model
+            file_obj.storage_key = file_key
+            file_obj.save()
+        except Exception as e:
+            return Response({"error": f"Failed to upload to Supabase Storage: {str(e)}"}, status=500)
+
+        collection_name = get_chroma_collection_name(user)
+        file_obj.chroma_collection = collection_name
+        file_obj.save()
+
         process_and_store_file(user, file_path, collection_name, file_id=file_obj.id)
+
         return Response(FileSerializer(file_obj).data, status=201)
+
+
+from rest_framework.generics import DestroyAPIView
+
+class FileDeleteView(DestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = File.objects.all()
+    serializer_class = FileSerializer
+
+    def perform_destroy(self, instance):
+        # Delete file from Supabase Storage
+        try:
+            if getattr(instance, 'storage_key', None):
+                supabase.storage.from_('user-uploads').remove([instance.storage_key])
+        except Exception as e:
+            pass  # Log error if needed
+        # Delete from local storage and database
+        instance.file.delete(save=False)
+        instance.delete()
+
 
 class FileListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        files = File.objects.filter(user=request.user)
+        user_id = self.request.user.id
+        files = File.objects.filter(user_id=user_id)
         serializer = FileSerializer(files, many=True)
         return Response(serializer.data)
 
@@ -237,20 +445,23 @@ class FileDeleteView(APIView):
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
+        user_id = self.request.user.id
         try:
-            file_obj = File.objects.get(pk=pk, user=request.user)
+            file_obj = File.objects.get(pk=pk, user_id=user_id)
         except File.DoesNotExist:
             return Response({'error': 'File not found.'}, status=404)
         # Remove from ChromaDB using LangChain Chroma vector store
         if file_obj.chroma_collection:
             from langchain_community.vectorstores import Chroma
-            user_chroma_dir = get_user_chroma_dir(request.user)
+            user_chroma_dir = get_user_chroma_dir(user_id)
             vs = Chroma(
                 collection_name=file_obj.chroma_collection,
                 embedding_function=text_emb,
                 persist_directory=user_chroma_dir,
             )
             vs.delete(where={"file_id": file_obj.id})
+            vs.persist()
+            vs.persist()  # Add this line to persist deletion
         # Delete file from storage and DB
         file_obj.file.delete(save=False)
         file_obj.delete()
@@ -261,10 +472,14 @@ class ChatListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Chat.objects.filter(user=self.request.user)
+        user = self.request.user  # this is a Django User instance now
+        user_id = user.id
+        return Chat.objects.filter(user_id=user_id)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        user = self.request.user  # this is a Django User instance now
+        user_id = user.id
+        serializer.save(user_id=user_id)
 
 class MessageListCreateView(generics.ListCreateAPIView):
     serializer_class = MessageSerializer
@@ -272,18 +487,22 @@ class MessageListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         chat_id = self.kwargs['chat_id']
-        return Message.objects.filter(chat__id=chat_id, chat__user=self.request.user)
+        user = self.request.user  # this is a Django User instance now
+        user_id = user.id
+        return Message.objects.filter(chat_id=chat_id, chat__user_id=user_id)
 
     def perform_create(self, serializer):
         chat_id = self.kwargs['chat_id']
-        chat = Chat.objects.get(id=chat_id, user=self.request.user)
-        message = serializer.save(sender=self.request.user, chat=chat)
+        user = self.request.user  # this is a Django User instance now
+        user_id = user.id
+        chat = Chat.objects.get(id=chat_id, user_id=user_id)
+        message = serializer.save(sender_id=user_id, chat_id=chat_id)
         # Trigger RAG pipeline on user message
-        rag_result = run_rag_pipeline(self.request.user, message.content)
+        rag_result = run_rag_pipeline(user, message.content)
         rag_answer = rag_result["answer"]
         rag_sources = rag_result["sources"]
         # Save the RAG response as a system message
-        Message.objects.create(chat=chat, sender=self.request.user, content=rag_answer)
+        Message.objects.create(chat_id=chat_id, sender_id=user_id, content=rag_answer)
         # Attach sources to the response for debugging
         self._rag_sources = rag_sources
 

@@ -1,117 +1,69 @@
-# Django Retrieval-Augmented Generation (RAG) Application
+# Multimodal-RAG
 
-## Overview
-This project is a Django-based Retrieval-Augmented Generation (RAG) backend that enables users to upload PDF files, extract both text and image captions, store them in a per-user ChromaDB vector store, and interact with a chat interface powered by OpenAI LLMs. The system supports JWT authentication, multi-modal ingestion (text and images), and robust context retrieval for question answering.
+This project is a Django-based web application integrated with Supabase for user authentication, file storage, and database management to provide a powerful retrieval-augmented generation pipeline for multi-modal data.
 
 ## Features
-- **User Authentication:** JWT-based registration and login (SimpleJWT)
-- **File Upload:** Upload PDFs, extract text and image captions (BLIP)
-- **Vector Storage:** Store embeddings in per-user ChromaDB directories
-- **Chat & Messaging:** Create chats, send messages, and receive context-aware LLM answers
-- **Advanced Chunking:** Overlapping chunking for improved retrieval
-- **API Documentation:** OpenAPI schema available for Postman/Swagger
-- **PostgreSQL Database:** Stores users, files, chats, and messages
-- **Media Management:** Uploaded files and images stored in `media/` and `imgs/`
 
-## Tech Stack
-- Django, Django REST Framework, SimpleJWT
-- LangChain (Chroma, RetrievalQA, OpenAIEmbeddings, PromptTemplate, RecursiveCharacterTextSplitter)
-- ChromaDB (per-user, persistent)
-- OpenAI (embeddings and LLM)
-- BLIP (image captioning)
-- PostgreSQL
-
-## Directory Structure
-```
-M_RAG_APPC/
-├── core/                # Main Django app (models, views, serializers)
-├── rag_app/             # Django project settings
-├── chroma_data/         # Per-user ChromaDB vector stores (ignored by git)
-├── imgs/                # Extracted images from PDFs (ignored by git)
-├── media/               # Uploaded files (ignored by git)
-├── requierments.txt     # Python dependencies
-├── README.md            # Project documentation
-└── manage.py            # Django management script
-```
+- User registration, login, password reset, and OTP verification via Supabase Auth.
+- File upload and storage using Supabase Storage.
+- Chat and message management stored in Supabase database.
+- Integration with OpenAI API for generative AI capabilities.
+- Support for multi-modal retrieval-augmented generation (RAG) pipelines.
 
 ## Setup Instructions
 
-### 1. Clone the Repository
-```bash
-git clone <your-repo-url>
-cd M_RAG_APPC
-```
+1. Clone the repository.
+2. Create and activate a Python virtual environment.
+   
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate  # Windows
+   ```
 
-### 2. Create and Activate a Virtual Environment
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+3. Install dependencies:
 
-### 3. Install Dependencies
-```bash
-pip install -r requierments.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-### 4. Configure Environment Variables
-- Set your OpenAI API key in the environment or in `core/views.py` (for development only).
-- Update PostgreSQL credentials in `rag_app/settings.py` as needed.
+4. Create a `.env` file with the following environment variables:
 
-### 5. Run Migrations
-```bash
-python manage.py migrate
-```
+   ```ini
+   SUPABASE_URL=your_supabase_url
+   SUPABASE_KEY=your_supabase_key
+   OPENAI_API_KEY=your_openai_api_key
+   DB_NAME=your_db_name
+   DB_USER=your_db_user
+   DB_PASSWORD=your_db_password
+   DB_HOST=your_db_host
+   DB_PORT=your_db_port
+   ```
 
-### 6. Create a Superuser (Optional)
-```bash
-python manage.py createsuperuser
-```
+   Replace values with your actual credentials.
 
-### 7. Run the Development Server
-```bash
-python manage.py runserver
-```
+5. Apply migrations and run the server:
 
-## API Usage
+   ```bash
+   python manage.py migrate
+   python manage.py runserver
+   ```
 
-### Authentication
-- **Register:** `POST /register/` (username, email, password)
-- **Login:** `POST /token/` (username, password) → returns access/refresh tokens
+## API Endpoints
 
-### File Management
-- **Upload File:** `POST /files/upload/` (multipart/form-data, field: `file`)
-- **List Files:** `GET /files/`
-- **Delete File:** `DELETE /files/<id>/delete/`
+- `/register/` - User registration
+- `/login/` - User login
+- `/password-reset/` - Password reset
+- `/verify-otp/` - OTP verification
+- `/files/upload/` - Upload files
+- `/files/list/` - List user files
+- `/chats/` and `/messages/` - Manage chats and messages
 
-### Chat & Messaging
-- **Create Chat:** `POST /chats/` (title)
-- **List Chats:** `GET /chats/`
-- **Send Message:** `POST /chats/<chat_id>/messages/` (content)
-- **List Messages:** `GET /chats/<chat_id>/messages/`
+## Notes
 
-### API Documentation
-- **OpenAPI Schema:** `GET /schema/` (importable in Postman/Swagger)
-
-## Vector Store & Data Management
-- **ChromaDB:** Each user has a separate vector store in `chroma_data/user_<id>/`.
-- **File Deletion:** When a file is deleted, all its vectors are removed from ChromaDB.
-- **Media:** Uploaded files and extracted images are stored in `media/` and `imgs/` (both git-ignored).
-
-## Development & Contribution
-- Follow PEP8 and Django best practices.
-- Use pull requests for new features and bug fixes.
-- Update tests in `core/tests.py` as needed.
-
-## Security Notes
-- Do not commit `.env` files, API keys, or user data.
-- Production deployments should set `DEBUG = False` and use secure credentials.
+- While Django's PostgreSQL database settings are still present, Supabase handles the primary data storage and authentication.
+- For file storage and user management, Supabase services are fully integrated.
+- Ensure environment variables are set properly for smooth operation.
 
 ## License
-MIT License (add your own if different)
 
-## Acknowledgements
-- [Django](https://www.djangoproject.com/)
-- [LangChain](https://python.langchain.com/)
-- [ChromaDB](https://www.trychroma.com/)
-- [OpenAI](https://platform.openai.com/)
-- [BLIP](https://huggingface.co/Salesforce/blip-image-captioning-base) 
+MIT License
