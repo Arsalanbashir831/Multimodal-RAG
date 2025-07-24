@@ -27,8 +27,10 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-ye6#tdjmntfyt=+^&6hiy6xx@8j1n-v%x!$_sy3bz3qoaxd%yf'
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
 AUTH_USER_MODEL = "core.User"
 
 url = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -40,7 +42,7 @@ if not url:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["192.168.10.10","localhost", "127.0.0.1"]
+ALLOWED_HOSTS = ["192.168.1.3","localhost", "127.0.0.1"]
 #CSRF_TRUSTED_ORIGINS = ["http://192.168.10.9:8000"]
 
 

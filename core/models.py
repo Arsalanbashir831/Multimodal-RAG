@@ -42,6 +42,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     id = models.CharField(primary_key=True, max_length=255)
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, blank=True, null=True)
+    first_name = models.CharField(max_length=30, blank=True, null=True)
+    last_name = models.CharField(max_length=150, blank=True, null=True)
+    phone_number = models.CharField(max_length=20, blank=True, null=True)
+    gender = models.CharField(max_length=20, blank=True, null=True)
+    date_of_birth = models.DateField(blank=True, null=True)
+    profile_picture = models.ImageField(upload_to="profile_pictures/", blank=True, null=True)
 
     # Optional flags for Django admin
     is_active = models.BooleanField(default=True)
@@ -67,9 +73,21 @@ class Chat(models.Model):
     def __str__(self):
         return f"Chat {self.id} (User {self.user_id})"
 
+# models.py
 class Message(models.Model):
+    SENDER_TYPES = (
+        ("user", "User"),
+        ("ai", "AI"),
+    )
+
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name="messages")
-    sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="messages")
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="messages",
+        null=True, blank=True  # allow null for AI messages if you want
+    )
+    sender_type = models.CharField(max_length=10, choices=SENDER_TYPES, default="user")
     content = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
 

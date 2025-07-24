@@ -1,6 +1,14 @@
 from rest_framework import serializers
 from .models import File, Chat, Message
 
+from .models import User
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'email', 'first_name', 'last_name', 'phone_number', 'gender', 'date_of_birth', 'profile_picture']
+        read_only_fields = ['id', 'email']
+
 class UserRegistrationSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
@@ -22,11 +30,18 @@ class ChatSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'created_at']
         read_only_fields = ['id', 'created_at']
 
-class  MessageSerializer(serializers.ModelSerializer):
-    sender_id = serializers.CharField(read_only=True)
-    chat_id = serializers.CharField(read_only=True)
+# serializers.py
+from rest_framework import serializers
+from .models import Message
+
+class MessageSerializer(serializers.ModelSerializer):
+    chat_id     = serializers.IntegerField(read_only=True)
+    sender_id   = serializers.CharField(read_only=True)   # or IntegerField if int
+    sender_type = serializers.CharField(read_only=True)
 
     class Meta:
-        model = Message
-        fields = ['id', 'chat_id', 'sender_id', 'content', 'timestamp']
-        read_only_fields = ['id', 'sender_id', 'timestamp', 'chat_id']
+        model  = Message
+        fields = ["id", "chat_id", "sender_id", "sender_type", "content", "timestamp"]
+        # ONLY mark the fields you set server-side as read-only
+        read_only_fields = ["id", "chat_id", "sender_id", "sender_type", "timestamp"]
+        # `content` stays writable

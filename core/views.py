@@ -8,7 +8,6 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from .models import File
 from .serializers import FileSerializer
 import chromadb
-import uuid
 from .models import Chat, Message
 from .serializers import ChatSerializer, MessageSerializer
 from rest_framework import generics
@@ -23,6 +22,7 @@ import torch
 import os
 from tqdm import tqdm
 import openai
+from uuid import uuid4
 import re
 from pathlib import Path
 from langchain_openai import OpenAIEmbeddings
@@ -32,8 +32,12 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.chat_models import ChatOpenAI
 from dotenv import load_dotenv
+from django.shortcuts import get_object_or_404
+
 load_dotenv()
 
+from django.conf import settings
+from django.db import transaction
 
 # Initialize ChromaDB client (simple local setup)
 chroma_client = chromadb.Client(chromadb.config.Settings(
@@ -47,7 +51,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 blip_model.to(device)
 
 text_emb = OE(model="text-embedding-3-small")
-image_emb = SentenceTransformer("clip-ViT-B-32")
+#image_emb = SentenceTransformer("clip-ViT-B-32")
 
 # --- PDF and Image Processing ---
 def describe_image(image_path):
@@ -151,9 +155,9 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
             ids=ids[i:i+batch_size]
         )
     vs.persist()
-    print(f"[DEBUG] Stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
-    for i, t in enumerate(texts[:3]):
-        print(f"[DEBUG] Example doc {i+1}: {t[:100]}")
+    # print(f"[DEBUG] Stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
+    # for i, t in enumerate(texts[:3]):
+    #     print(f"[DEBUG] Example doc {i+1}: {t[:100]}")
 
 # --- RAG query: load per-user Chroma and run RetrievalQA ---
 def run_rag_query(user, query, collection_name, k=5):
@@ -166,7 +170,7 @@ def run_rag_query(user, query, collection_name, k=5):
         collection_name=collection_name,
     )
     prompt_template = (
-        "You are a helpful assistant. Make sense of the context and answer the question. "
+        "You are a helpful assistant. Make sense of the context and answer the question. Explain the answer in detail. "
         "If unsure, say 'I don't know at end.'\n\n"
         "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
@@ -183,9 +187,9 @@ def run_rag_query(user, query, collection_name, k=5):
     result = rag_chain({"query": query})
     answer = result["result"]
     sources = result.get("source_documents", [])
-    print(f"[DEBUG] Retrieved {len(sources)} source documents for user {user.id}")
-    for i, doc in enumerate(sources[:3]):
-        print(f"[DEBUG] Source {i+1}: {doc.page_content[:100]} (page: {doc.metadata.get('page')})")
+    # print(f"[DEBUG] Retrieved {len(sources)} source documents for user {user.id}")
+    # for i, doc in enumerate(sources[:3]):
+    #     print(f"[DEBUG] Source {i+1}: {doc.page_content[:100]} (page: {doc.metadata.get('page')})")
     return answer, sources
 
 # --- Update run_rag_pipeline to return both answer and sources ---
@@ -215,10 +219,14 @@ class RegisterView(APIView):
         data = request.data
         email = data.get('email')
         password = data.get('password')
-        username = data.get('username')
-
-        if not email or not password or not username:
-            return Response({'error': 'Email, password, and username are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        first_name = data.get('first_name')
+        last_name = data.get('last_name')
+        phone_number = data.get('phone_number')
+        gender = data.get('gender')
+        date_of_birth = data.get('date_of_birth')
+        
+        if not email or not password or not first_name or not last_name or not phone_number or not gender or not date_of_birth:
+            return Response({'error': 'Email, password, first name, last name, phone number, gender, and date of birth are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if user already exists by trying to sign in
         try:
@@ -248,7 +256,13 @@ class RegisterView(APIView):
                 {
                     'email': email,
                     'password': password,
-                    'options': {'data': {'username': username}}
+                    'options': {'data': {
+                        'first_name': first_name,
+                        'last_name': last_name,
+                        'phone_number': phone_number,
+                        'gender': gender,
+                        'date_of_birth': date_of_birth
+                    }}
                 }
             )
         except AuthApiError as e:
@@ -258,6 +272,165 @@ class RegisterView(APIView):
             return Response({'error': str(response.error)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({'message': 'User registered successfully. Please verify your email.'}, status=status.HTTP_201_CREATED)
+
+
+from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
+from .serializers import UserSerializer
+
+class UserProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        user = request.user
+
+        # Fetch fresh user data from Supabase using the user's UUID
+        response = supabase.auth.admin.get_user_by_id(user.id)
+        if response.get('error'):
+            return Response({"error": response['error']['message']}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_user_data = response.get('data')
+        if not raw_user_data:
+            return Response({"error": "User not found in Supabase."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Construct profile picture URL if available
+        profile_picture_key = raw_user_data.get('user_metadata', {}).get('profile_picture')
+        profile_picture_url = None
+        bucket_name = "user-uploads"
+        if profile_picture_key:
+            if profile_picture_key.startswith("http"):
+                profile_picture_url = profile_picture_key
+            else:
+                profile_picture_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket_name}/{profile_picture_key}"
+
+        # Compose all user data to return
+        user_metadata = raw_user_data.get('user_metadata', {})
+        bucket_name = "user-uploads"
+        if profile_picture_key and not profile_picture_key.startswith("http"):
+            profile_picture_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket_name}/{profile_picture_key}"
+            user_metadata['profile_picture'] = profile_picture_url
+        elif profile_picture_key and profile_picture_key.startswith("http"):
+            user_metadata['profile_picture'] = profile_picture_key
+        else:
+            user_metadata['profile_picture'] = None
+
+        result = {
+            "id": raw_user_data.get('id'),
+            "email": raw_user_data.get('email'),
+            "phone_confirmed_at": raw_user_data.get('phone_confirmed_at'),
+            "email_confirmed_at": raw_user_data.get('email_confirmed_at'),
+            "last_sign_in_at": raw_user_data.get('last_sign_in_at'),
+            "app_metadata": raw_user_data.get('app_metadata'),
+            "user_metadata": user_metadata,
+            "created_at": raw_user_data.get('created_at'),
+            "updated_at": raw_user_data.get('updated_at')
+        }
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    def put(self, request, *args, **kwargs):
+        user = request.user
+        data = request.data
+        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+        user_metadata = {
+            "first_name": data.get('first_name', ''),
+            "last_name": data.get('last_name', ''),
+            "phone_number": data.get('phone_number', ''),
+            "gender": data.get('gender', ''),
+            "date_of_birth": data.get('date_of_birth', ''),
+            "profile_picture": data.get('profile_picture', '')
+        }
+
+        updates = {
+            "user_metadata": user_metadata
+        }
+
+        response = supabase.auth.admin.update_user_by_id(user.id, updates)
+        if response.get('error'):
+            return Response({"error": response['error']['message']}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Also update local Django user model if exists
+        local_user = user
+        local_user.first_name = user_metadata.get('first_name')
+        local_user.last_name = user_metadata.get('last_name')
+        local_user.phone_number = user_metadata.get('phone_number')
+        local_user.gender = user_metadata.get('gender')
+        if user_metadata.get('date_of_birth'):
+            from datetime import datetime
+            try:
+                local_user.date_of_birth = datetime.strptime(user_metadata.get('date_of_birth'), "%Y-%m-%d").date()
+            except Exception:
+                local_user.date_of_birth = None
+        local_user.profile_picture = user_metadata.get('profile_picture')
+        local_user.save()
+
+        return Response({"message": "User profile updated successfully."}, status=status.HTTP_200_OK)
+
+
+
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.response import Response
+from rest_framework import status
+
+class UserProfilePictureGetView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        profile_picture_key = user.profile_picture
+        if not profile_picture_key:
+            return Response({"error": "User has no profile picture."}, status=status.HTTP_404_NOT_FOUND)
+
+        supabase_url = settings.SUPABASE_URL
+        bucket_name = "user-uploads"
+
+        # Construct public URL (assuming bucket is public or using signed URLs would require more implementation)
+        image_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{profile_picture_key}"
+
+        return Response({"profile_picture_url": image_url}, status=status.HTTP_200_OK)
+
+
+class UserProfilePictureUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        file_obj = request.FILES.get('profile_picture')
+        if not file_obj:
+            return Response({"error": "No profile_picture file provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        folder = f"user_{user.id}"
+        filename = file_obj.name
+        storage_key = f"{folder}/{filename}"
+
+        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+        try:
+            file_bytes = file_obj.read()
+
+            # Upload to Supabase Storage
+            res = supabase.storage.from_("user-uploads").upload(
+                storage_key,
+                file_bytes,
+                {"content-type": file_obj.content_type}
+            )
+            if isinstance(res, dict) and res.get("error"):
+                return Response({"error": res["error"]["message"]}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Set profile_picture field to the storage key or URL
+            user.profile_picture = storage_key  # or construct a full URL if needed
+            user.save(update_fields=['profile_picture'])
+
+            # No local file to delete since file is read directly from upload
+
+            serializer = UserSerializer(user)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class LoginView(APIView):
@@ -360,58 +533,257 @@ class VerifyOtpView(APIView):
         else:
             return Response({'message': 'Email not verified'}, status=status.HTTP_400_BAD_REQUEST)
 
-
 import uuid
 import os
 
+class SupabaseOptions:
+    def __init__(self, token):
+        self.headers = {"Authorization": f"Bearer {token}"}
+        self.auto_refresh_token = False
+        self.persist_session = False
+        self.detect_session_in_url = False
+        self.storage = None
+        self.flow_type = None
+        self.httpx_client = None
+
+
 class FileUploadView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
 
-    def post(self, request):
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        folder = f"user_{user.id}"
+
+        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
         uploaded_file = request.FILES.get("file")
         if not uploaded_file:
-            return Response({"error": "No file provided."}, status=400)
+            return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = uploaded_file.name.split(".")[-1].lower()
+        filename = f"{uuid4()}.{ext}"
+        storage_key = f"{folder}/{filename}"
+
+        try:
+            file_bytes = uploaded_file.read()
+
+            # 1) Upload to Supabase
+            res = supabase.storage.from_("user-uploads").upload(
+                storage_key,
+                file_bytes,
+                {"content-type": uploaded_file.content_type}
+            )
+            if isinstance(res, dict) and res.get("error"):
+                return Response({"error": res["error"]["message"]}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 2) Save DB row & run embedding pipeline
+            with transaction.atomic():
+                collection_name = get_chroma_collection_name(user)
+
+                # Save local copy so process_and_store_file can read from disk
+                file_obj = File.objects.create(
+                    user=user,
+                    file=uploaded_file,          # FileField writes to MEDIA_ROOT/uploads/...
+                    filename=uploaded_file.name, # original name
+                    chroma_collection=collection_name,
+                    storage_key=storage_key
+                )
+
+            # Path on local disk (since we just saved FileField)
+            file_path = file_obj.file.path
+
+            # 3) Create embeddings (sync)
+            process_and_store_file(user, file_path, collection_name, file_id=file_obj.id)
+
+            # Delete local file after processing
+            import os
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+            return Response(
+                {
+                    "message": "File uploaded & embedded",
+                    "file_id": file_obj.id,
+                    "storage_key": storage_key
+                },
+                status=status.HTTP_201_CREATED
+            )
+
+        except Exception as e:
+            # Optional: clean up supabase object if DB/embedding failed
+            try:
+                supabase.storage.from_("user-uploads").remove([storage_key])
+            except Exception:
+                pass
+
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+from django.conf import settings
+
+from .serializers import UserSerializer
+from rest_framework import generics
+from rest_framework.permissions import IsAuthenticated
+
+class UserProfileView(generics.RetrieveUpdateAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+
+class UserFilesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+
+        folder_name = f"user_{request.user.id}"
+
+        try:
+            files = supabase.storage.from_("user-uploads").list(
+                path=folder_name,
+                options={"limit": 100, "offset": 0, "sortBy": {"column": "name", "order": "asc"}},
+            )
+
+            # helper to build path once
+            def full_path(name: str) -> str:
+                return f"{folder_name}/{name}"
+
+            # ----- OPTION A: bucket is PUBLIC -----
+            # get_public_url = supabase.storage.from_("user-uploads").get_public_url
+
+            # ----- OPTION B: bucket is PRIVATE (recommended) -----
+            create_signed_url = supabase.storage.from_("user-uploads").create_signed_url
+            EXPIRES_IN = 3600  # seconds
+
+            files_info = []
+            for f in files:
+                if not f["name"].lower().endswith(".pdf"):
+                    continue
+
+                path = full_path(f["name"])
+
+                # PUBLIC:
+                # url = get_public_url(path)
+
+                # PRIVATE (signed):
+                signed = create_signed_url(path, EXPIRES_IN)
+                url = signed.get("signedURL") or signed.get("signed_url")  # lib versions differ
+
+                files_info.append({
+                    "name": f["name"],
+                    "updated_at": f.get("updated_at"),
+                    "created_at": f.get("created_at"),
+                    "id": f.get("id"),
+                    "url": url,
+                })
+
+            return Response({"files": files_info}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserFileDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    # def delete(self, request, file_id):
+    #     user = request.user
+    #     supabase_token = request.headers.get("Authorization", "").replace("Bearer ", "")
+
+    #     try:
+    #         # Initialize supabase client with service role key
+    #         supabase = create_client(
+    #             settings.SUPABASE_URL,
+    #             settings.SUPABASE_SERVICE_ROLE_KEY,
+    #             options={
+    #                 "auto_refresh_token": True,
+    #                 "persist_session": True,
+    #                 "detect_session_in_url": True,
+    #                 "storage": None,
+    #             },
+    #         )
+
+    #         # Validate file ownership by id
+    #         file_obj = File.objects.filter(id=file_id, user=user).first()
+    #         if not file_obj:
+    #             return Response({"error": "File not found or you do not have permission."}, status=status.HTTP_404_NOT_FOUND)
+
+    #         file_path = file_obj.storage_key
+
+    #         # Remove file from Supabase storage
+    #         removed = supabase.storage.from_("user-uploads").remove([file_path])
+    #         if isinstance(removed, dict) and removed.get("error"):
+    #             return Response({"error": removed["error"]["message"]}, status=status.HTTP_400_BAD_REQUEST)
+
+    #         # Remove corresponding embeddings from ChromaDB
+    #         try:
+    #             collection = chroma_client.get_collection(name="user_files")  # Change to your collection name
+    #             collection.delete(where={"file_id": str(file_id)})
+    #         except Exception:
+    #             pass  # Log error if needed
+
+    #         # Remove DB record for the file
+    #         file_obj.delete()
+
+    #         return Response({"message": "File deleted."}, status=status.HTTP_200_OK)
+
+    #     except Exception as e:
+    #         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # permission_classes = [IsAuthenticated]
+
+    def delete(self, request, file_name: str, *args, **kwargs):
+        # Server-side key (or a valid Supabase user JWT in another header if you insist)
+        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
         user = request.user
-        filename = uploaded_file.name
+        folder = f"user_{user.id}"
+        file_path = f"{folder}/{file_name}"
 
-        # Save file locally first so PyMuPDF can read it
-        file_obj = File.objects.create(user=user, file=uploaded_file, filename=filename)
-        file_path = file_obj.file.path
+        # (Optional) simple path traversal guard
+        if "/" in file_name or ".." in file_name:
+            return Response({"error": "Invalid file name."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get user access token to initialize supabase client for this request
-        access_token = None
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            access_token = auth_header[len("Bearer "):].strip()
-
-        if access_token is None:
-            return Response({"error": "Authorization token missing"}, status=401)
-
-        from supabase import create_client
-
-        supabase_user = create_client(SUPABASE_URL, access_token)
-
-        # Upload file to Supabase Storage using user-specific folder with user's supabase client
         try:
-            file_key = f"user_{user.id}/{uuid.uuid4()}_{filename}"
-            with open(file_path, "rb") as f:
-                supabase_user.storage.from_('user-uploads').upload(file_key, f)
-            # Save the storage key to the model
-            file_obj.storage_key = file_key
-            file_obj.save()
+            # (Optional) verify ownership before delete
+            # Cheap check using list; for large folders use your DB instead
+            files = supabase.storage.from_("user-uploads").list(folder)
+            if not any(f["name"] == file_name for f in files):
+                return Response({"error": "File not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            # Remove from storage
+            removed = supabase.storage.from_("user-uploads").remove([file_path])
+            # v2: returns list of dicts; v1: dict with data/error
+            if isinstance(removed, dict) and removed.get("error"):
+                return Response({"error": removed["error"]["message"]}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Remove from DB (wrap to keep consistency)
+            with transaction.atomic():
+                from .models import File
+                file_obj = File.objects.filter(user=user, storage_key=file_path).first()
+                if file_obj:
+                    if file_obj.chroma_collection:
+                        from langchain_community.vectorstores import Chroma
+                        user_chroma_dir = get_user_chroma_dir(user.id)
+                        vs = Chroma(
+                            collection_name=file_obj.chroma_collection,
+                            embedding_function=text_emb,
+                            persist_directory=user_chroma_dir,
+                        )
+                        vs.delete(where={"file_id": file_obj.id})
+                        vs.persist()
+                    # Delete local file
+                    file_obj.file.delete(save=False)
+                    file_obj.delete()
+
+            return Response({"message": "File deleted."}, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({"error": f"Failed to upload to Supabase Storage: {str(e)}"}, status=500)
+            # log.exception("Supabase delete failed")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        collection_name = get_chroma_collection_name(user)
-        file_obj.chroma_collection = collection_name
-        file_obj.save()
-
-        process_and_store_file(user, file_path, collection_name, file_id=file_obj.id)
-
-        return Response(FileSerializer(file_obj).data, status=201)
-
+ 
 
 from rest_framework.generics import DestroyAPIView
 
@@ -481,34 +853,93 @@ class ChatListCreateView(generics.ListCreateAPIView):
         user_id = user.id
         serializer.save(user_id=user_id)
 
+
+def serialize_message(m: Message):
+    return {
+        "id": m.id,
+        "chat_id": str(m.chat_id),
+        "sender_id": str(m.sender_id) if m.sender_id else None,
+        "sender_type": m.sender_type,
+        "content": m.content,
+        "timestamp": m.timestamp.isoformat(),
+    }
+    
 class MessageListCreateView(generics.ListCreateAPIView):
     serializer_class = MessageSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        chat_id = self.kwargs['chat_id']
-        user = self.request.user  # this is a Django User instance now
-        user_id = user.id
-        return Message.objects.filter(chat_id=chat_id, chat__user_id=user_id)
+        chat_id = self.kwargs["chat_id"]
+        return (Message.objects
+                .filter(chat_id=chat_id, chat__user_id=self.request.user.id)
+                .order_by("timestamp"))
 
-    def perform_create(self, serializer):
-        chat_id = self.kwargs['chat_id']
-        user = self.request.user  # this is a Django User instance now
-        user_id = user.id
-        chat = Chat.objects.get(id=chat_id, user_id=user_id)
-        message = serializer.save(sender_id=user_id, chat_id=chat_id)
-        # Trigger RAG pipeline on user message
-        rag_result = run_rag_pipeline(user, message.content)
-        rag_answer = rag_result["answer"]
-        rag_sources = rag_result["sources"]
-        # Save the RAG response as a system message
-        Message.objects.create(chat_id=chat_id, sender_id=user_id, content=rag_answer)
-        # Attach sources to the response for debugging
-        self._rag_sources = rag_sources
+    def list(self, request, *args, **kwargs):
+        msgs = self.get_queryset()
+        data = [{
+            "id": m.id,
+            "chat_id": str(m.chat_id),
+            "user_message": m.content if m.sender_type == "user" else None,
+            "ai_response":  m.content if m.sender_type == "ai"   else None,
+        } for m in msgs]
+        return Response({"messages": data}, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
-        response = super().create(request, *args, **kwargs)
-        # Add sources to the response if available
-        if hasattr(self, '_rag_sources'):
-            response.data["rag_sources"] = self._rag_sources
-        return response
+        user    = request.user
+        chat_id = self.kwargs["chat_id"]
+        chat    = get_object_or_404(Chat, id=chat_id, user_id=user.id)
+
+        # 1) Save user message
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        user_msg = ser.save(sender=user, sender_type="user", chat=chat)
+
+        # 2) RAG -> AI message
+        rag = run_rag_pipeline(user, user_msg.content)
+        ai_msg = Message.objects.create(
+            chat=chat,
+            sender=None,
+            sender_type="ai",
+            content=rag["answer"]
+        )
+
+        # 3) Flat response
+        return Response(
+            {
+                "id": ai_msg.id,                     # or user_msg.id / chat_id — your choice
+                "chat_id": str(chat.id),
+                "user_message": user_msg.content,
+                "ai_response":  ai_msg.content,
+                # "rag_sources": rag.get("sources", [])  # optional
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from supabase import create_client
+from django.conf import settings
+
+
+class TokenRefreshView(APIView):
+    def post(self, request):
+        refresh_token = request.data.get("refresh_token")
+        if not refresh_token:
+            return Response({"error": "refresh_token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        supabase_url = settings.SUPABASE_URL
+        supabase_key = settings.SUPABASE_KEY
+        supabase = create_client(supabase_url, supabase_key)
+
+        try:
+            data = supabase.auth.refresh_session(refresh_token)
+            if data.session and data.session.access_token and data.session.refresh_token:
+                return Response({
+                    "access_token": data.session.access_token,
+                    "refresh_token": data.session.refresh_token
+                })
+            else:
+                return Response({"error": "Failed to refresh token"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
