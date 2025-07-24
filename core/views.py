@@ -5,7 +5,7 @@ from rest_framework import status
 from .serializers import UserRegistrationSerializer
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
-from .models import File
+from .models import File, User
 from .serializers import FileSerializer
 import chromadb
 from .models import Chat, Message
@@ -216,71 +216,82 @@ def get_chroma_collection_name(user):
 from supabase import create_client, Client
 import os
 
+from datetime import datetime
+
 # SUPABASE_URL = os.getenv('SUPABASE_URL')
 # SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-
 class RegisterView(APIView):
     def post(self, request):
         data = request.data
-        email = data.get('email')
-        password = data.get('password')
-        first_name = data.get('first_name')
-        last_name = data.get('last_name')
-        phone_number = data.get('phone_number')
-        gender = data.get('gender')
-        date_of_birth = data.get('date_of_birth')
-        
-        if not email or not password or not first_name or not last_name or not phone_number or not gender or not date_of_birth:
-            return Response({'error': 'Email, password, first name, last name, phone number, gender, and date of birth are required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check if user already exists by trying to sign in
-        try:
-            sign_in_response = supabase.auth.sign_in_with_password({'email': email, 'password': password})
-            # If sign_in is successful, user exists, ask to login
-            if sign_in_response.user:
-                return Response({'error': 'User already registered. Please login instead.'}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception:
-            # If login fails, likely user not registered yet, proceed to sign up
-            pass
-        
-        # Check if user already exists by trying to sign in
-        try:
-            sign_in_response = supabase.auth.sign_in_with_password({
-                'email': email,
-                'password': password, 
-
-            })
-            if sign_in_response.user is not None:
-                return Response({'error': 'User already registered, please login instead.'}, status=status.HTTP_400_BAD_REQUEST)
-        except AuthApiError as e:
-            # If sign in fails due to user not existing, proceed with registration
-            if 'Invalid login credentials' not in str(e):
-                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        # Proceed with sign up
-        try:
-            response = supabase.auth.sign_up(
-                {
-                    'email': email,
-                    'password': password,
-                    'options': {'data': {
-                        'first_name': first_name,
-                        'last_name': last_name,
-                        'phone_number': phone_number,
-                        'gender': gender,
-                        'date_of_birth': date_of_birth
-                    },'redirect_to': settings.BASE_URL_SIGNIN}
-                }
+        required = [
+            'email', 'password',
+            'first_name','last_name',
+            'phone_number','gender','date_of_birth'
+        ]
+        missing = [f for f in required if not data.get(f)]
+        if missing:
+            return Response(
+                {'error': f"Missing fields: {', '.join(missing)}"},
+                status=status.HTTP_400_BAD_REQUEST
             )
+
+        supabase = create_client(
+            settings.SUPABASE_URL,
+            settings.SUPABASE_SERVICE_ROLE_KEY
+        )
+
+
+        try:
+            resp = supabase.auth.sign_up({
+                'email':    data['email'],
+                'password': data['password'],
+                'options': {
+                    'redirect_to': settings.BASE_URL_SIGNIN
+                }
+            })
         except AuthApiError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        if hasattr(response, 'error') and response.error:
-            return Response({'error': str(response.error)}, status=status.HTTP_400_BAD_REQUEST)
+        # At this point, resp.user is guaranteed to exist
+        supa_user = resp.user  # <— has .id and .email :contentReference[oaicite:0]{index=0}
 
-        return Response({'message': 'User registered successfully. Please verify your email.'}, status=status.HTTP_201_CREATED)
+        # Push metadata into Supabase
+        metadata = {
+            'first_name':   data['first_name'],
+            'last_name':    data['last_name'],
+            'phone_number': data['phone_number'],
+            'gender':       data['gender'],
+            'date_of_birth': data['date_of_birth']
+        }
+        try:
+            supabase.auth.admin.update_user_by_id(
+                supa_user.id,
+                {'user_metadata': metadata}
+            )
+        except AuthApiError as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        # Mirror into Django
+        try:
+            dob = datetime.strptime(data['date_of_birth'], "%Y-%m-%d").date()
+        except ValueError:
+            dob = None
 
+        User.objects.create_user(
+            id=supa_user.id,
+            email=supa_user.email,
+            first_name=metadata['first_name'],
+            last_name=metadata['last_name'],
+            phone_number=metadata['phone_number'],
+            gender=metadata['gender'],
+            date_of_birth=dob
+        )
+
+        return Response(
+            {'message': 'Registration successful. Please verify your email.'},
+            status=status.HTTP_201_CREATED
+        )
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from .serializers import UserSerializer
