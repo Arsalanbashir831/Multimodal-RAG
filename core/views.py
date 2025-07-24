@@ -901,6 +901,7 @@ class MessageListCreateView(generics.ListCreateAPIView):
             "chat_id": str(m.chat_id),
             "user_message": m.content if m.sender_type == "user" else None,
             "ai_response":  m.content if m.sender_type == "ai"   else None,
+            "rag_sources":  m.sources  if m.sender_type == "ai"   else None,
         } for m in msgs]
         return Response({"messages": data}, status=status.HTTP_200_OK)
 
@@ -920,7 +921,8 @@ class MessageListCreateView(generics.ListCreateAPIView):
             chat=chat,
             sender=None,
             sender_type="ai",
-            content=rag["answer"]
+            content=rag["answer"],
+            sources=rag.get("sources", [])
         )
 
         # 3) Flat response
@@ -930,7 +932,7 @@ class MessageListCreateView(generics.ListCreateAPIView):
                 "chat_id": str(chat.id),
                 "user_message": user_msg.content,
                 "ai_response":  ai_msg.content,
-                # "rag_sources": rag.get("sources", [])  # optional
+                "rag_sources": rag.get("sources", [])  # optional
             },
             status=status.HTTP_201_CREATED
         )

@@ -90,6 +90,7 @@ class Message(models.Model):
     sender_type = models.CharField(max_length=10, choices=SENDER_TYPES, default="user")
     content = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
+    sources     = models.JSONField(blank=True, null=True, default=list)
 
 class File(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="files")
