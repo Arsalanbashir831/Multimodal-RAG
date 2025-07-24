@@ -134,11 +134,17 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
                 "type": "image_caption",
                 "page": p["page"],
                 "path": im,
-                "caption": caption,
-                "file_id": file_id
+                "caption": caption
             })
-            ids.append(f"{file_id}_{chunk_idx}")
-            chunk_idx += 1
+
+    # Clean up extracted images after processing
+    for p in pages:
+        for im in p["images"]:
+            try:
+                os.remove(im)
+            except Exception:
+                pass  # Ignore errors during cleanup
+
     if not texts:
         raise ValueError("PDF contained no text or images.")
     user_chroma_dir = get_user_chroma_dir(user)
@@ -210,9 +216,9 @@ def get_chroma_collection_name(user):
 from supabase import create_client, Client
 import os
 
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# SUPABASE_URL = os.getenv('SUPABASE_URL')
+# SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
 class RegisterView(APIView):
     def post(self, request):
@@ -242,7 +248,8 @@ class RegisterView(APIView):
         try:
             sign_in_response = supabase.auth.sign_in_with_password({
                 'email': email,
-                'password': password
+                'password': password, 
+
             })
             if sign_in_response.user is not None:
                 return Response({'error': 'User already registered, please login instead.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -262,7 +269,7 @@ class RegisterView(APIView):
                         'phone_number': phone_number,
                         'gender': gender,
                         'date_of_birth': date_of_birth
-                    }}
+                    },'redirect_to': settings.BASE_URL_SIGNIN}
                 }
             )
         except AuthApiError as e:
@@ -374,6 +381,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework import status
 
+
 class UserProfilePictureGetView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -462,15 +470,16 @@ class LoginView(APIView):
             'user': {'email': user.email, 'id': user.id}
         }, status=status.HTTP_200_OK)
 
-
+# resetpass_url ='http://localhost:3000/reset-password'
 class PasswordResetView(APIView):
+  
     def post(self, request):
         email = request.data.get('email')
         if not email:
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Trigger password reset email through Supabase
-        response = supabase.auth.reset_password_for_email(email)
+        response = supabase.auth.reset_password_for_email(email, options={'redirect_to': settings.BASE_URL_RESET_PASSWORD})
 
         if hasattr(response, 'error') and response.error:
             return Response({'error': str(response.error)}, status=status.HTTP_400_BAD_REQUEST)

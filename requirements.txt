@@ -33,7 +33,7 @@ frozenlist==1.7.0
 fsspec==2025.5.1
 google-auth==2.40.3
 googleapis-common-protos==1.70.0
-gotrue==2.12.3
+gotrue
 greenlet==3.2.3
 grpcio==1.73.1
 h11==0.16.0
@@ -99,7 +99,7 @@ pydantic==2.11.7
 pydantic-settings==2.10.1
 pydantic_core==2.33.2
 Pygments==2.19.2
-PyJWT==2.10.1
+PyJWT
 PyMuPDF==1.26.3
 PyPika==0.48.9
 pyproject_hooks==1.2.0
