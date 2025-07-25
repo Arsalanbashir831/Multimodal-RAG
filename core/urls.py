@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import RegisterView, LoginView, PasswordResetView, VerifyOtpView, FileUploadView, FileListView, FileDeleteView, ChatListCreateView, MessageListCreateView, UserFilesView, UserFileDeleteView, UserProfileView, UserProfilePictureUploadView, UserProfilePictureGetView
+from .views import RegisterView, LoginView, PasswordResetView, VerifyOtpView, FileUploadView, FileListView, FileDeleteView, ChatListCreateView, MessageListCreateView, UserFilesView, UserFileDeleteView, UserProfileView, UserProfilePictureUploadView, UserProfilePictureGetView, UserLLMModelView
 from .views import PasswordResetConfirmView, TokenRefreshView
 
 urlpatterns = [
@@ -18,6 +18,7 @@ urlpatterns = [
     path('chats/<int:chat_id>/messages/', MessageListCreateView.as_view(), name='message_list_create'),
     path('user-files/', UserFilesView.as_view(), name='user_files_list'),
     path('user-files/<str:file_name>/', UserFileDeleteView.as_view(), name='user_file_delete'),
+    path('user/llm-model/', UserLLMModelView.as_view(), name='user_llm_model'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]
 

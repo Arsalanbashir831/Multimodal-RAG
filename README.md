@@ -1,13 +1,14 @@
 # Multimodal-RAG
 
-This project is a multimodal retrieval augmented generation (RAG) system that integrates various data modalities for enhanced information retrieval and generation.
+This project is a multimodal retrieval augmented generation (RAG) system that integrates various data modalities for enhanced information retrieval and generation. It supports dynamic switching between OpenAI and Google Gemini LLMs.
 
 ## Features
 
 - Upload and manage user files securely with Supabase Storage integration.
 - Store and retrieve file embeddings efficiently using ChromaDB vector store.
-- User profile management including profile picture uploads.
-- REST API endpoints for file handling, user profiles, and authentication.
+- User profile management including profile picture uploads and preferred LLM selection.
+- Dynamic integration with OpenAI and Google Gemini LLMs.
+- REST API endpoints for file handling, user profiles, authentication, and chat management.
 - Support for PDF file filtering in user file listings.
 - Automatic cleanup of temporary files to optimize storage usage.
 
@@ -40,6 +41,7 @@ This project is a multimodal retrieval augmented generation (RAG) system that in
    SUPABASE_URL=your_supabase_url
    SUPABASE_KEY=your_supabase_key
    OPENAI_API_KEY=your_openai_api_key
+   GOOGLE_API_KEY=your_google_gemini_api_key
    DB_NAME=your_db_name
    DB_USER=your_db_user
    DB_PASSWORD=your_db_password
@@ -67,7 +69,6 @@ This project is a multimodal retrieval augmented generation (RAG) system that in
   - `/register/` - Register a new user.
   - `/login/` - Authenticate user login.
   - `/password-reset/` - Request password reset.
- 
 
 - **File Management:**
   - `/files/upload/` - Upload files to Supabase storage and create embeddings.
@@ -79,6 +80,9 @@ This project is a multimodal retrieval augmented generation (RAG) system that in
 
 - **Chat and Message Management:**
   - `/chats/` and `/messages/` - Endpoints to manage chat sessions and messages.
+
+- **User LLM Preference:**
+  - Users can select their preferred LLM (OpenAI or Gemini) in their profile.
 
 ## Maintenance
 

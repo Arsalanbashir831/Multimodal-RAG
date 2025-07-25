@@ -34,6 +34,10 @@ BASE_URL_RESET_PASSWORD=os.getenv("BASE_URL_RESET_PASSWORD", "")
 BASE_URL_SIGNIN=os.getenv("BASE_URL_SIGNIN", "")
 AUTH_USER_MODEL = "core.User"
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+
 url = os.getenv("SUPABASE_DB_URL", "").strip()
 
 if not url:

@@ -31,6 +31,7 @@ from langchain.prompts import PromptTemplate
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.chat_models import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from django.shortcuts import get_object_or_404
 
@@ -169,7 +170,7 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
                 pass  # Ignore errors during cleanup
 
 # --- RAG query: load per-user Chroma and run RetrievalQA ---
-def run_rag_query(user, query, collection_name, k=5):
+def run_rag_query(user, query, collection_name, llm=None, k=5):
     user_chroma_dir = get_user_chroma_dir(user)
     if not Path(user_chroma_dir).exists():
         return "No documents found for this user.", []
@@ -179,16 +180,18 @@ def run_rag_query(user, query, collection_name, k=5):
         collection_name=collection_name,
     )
     prompt_template = (
-        "You are a helpful assistant. Make sense of the context and answer the question. Explain the answer in detail. "
-        "If unsure, say 'I don't know at end.'\n\n"
+        "You are a helpful assistant. Make sense of the current context provided and answer the question. Explain the answer in detail. "
+        "If unsure, say I do not have enough information to answer the question in soft tone. '\n\n"
         "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
     prompt = PromptTemplate(
         template=prompt_template,
         input_variables=["context", "question"]
     )
+    if llm is None:
+        llm = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
     rag_chain = RetrievalQA.from_chain_type(
-        llm=ChatOpenAI(model_name="gpt-4.1-mini", temperature=0.2),
+        llm=llm,
         retriever=vs.as_retriever(search_kwargs={"k": k}),
         return_source_documents=True,
         chain_type_kwargs={"prompt": prompt}
@@ -196,17 +199,47 @@ def run_rag_query(user, query, collection_name, k=5):
     result = rag_chain({"query": query})
     answer = result["result"]
     sources = result.get("source_documents", [])
-    # print(f"[DEBUG] Retrieved {len(sources)} source documents for user {user.id}")
-    # for i, doc in enumerate(sources[:3]):
-    #     print(f"[DEBUG] Source {i+1}: {doc.page_content[:100]} (page: {doc.metadata.get('page')})")
     return answer, sources
 
-# --- Update run_rag_pipeline to return both answer and sources ---
+
 def run_rag_pipeline(user, query):
     collection_name = get_chroma_collection_name(user)
-    answer, sources = run_rag_query(user, query, collection_name)
-    # Return both answer and sources for debugging
+
+    # Retrieve user selected LLM model or default
+    default_model = "openai"
+    selected_model = getattr(user, "preferred_llm", default_model)
+
+    # Instantiate corresponding llm object
+    if selected_model == "gemini":
+        llm_instance = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", google_api_key=settings.GEMINI_API_KEY, temperature=0.2)
+    else:
+        llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
+
+    answer, sources = run_rag_query(user, query, collection_name, llm=llm_instance)
     return {"answer": answer, "sources": [doc.page_content for doc in sources]}
+
+
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+class UserLLMModelView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        selected = getattr(user, "preferred_llm", "openai")
+        return Response({"preferred_llm": selected}, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user = request.user
+        new_model = request.data.get("preferred_llm")
+        if new_model not in ("openai", "gemini"):
+            return Response({"error": "Invalid LLM model. Choose 'openai' or 'gemini'."}, status=status.HTTP_400_BAD_REQUEST)
+        setattr(user, "preferred_llm", new_model)
+        user.save()
+        return Response({"message": f"Preferred LLM model set to '{new_model}'"}, status=status.HTTP_200_OK)
 
 def get_chroma_collection_name(user):
     username = re.sub(r'[^a-zA-Z0-9._-]', '_', user.username)

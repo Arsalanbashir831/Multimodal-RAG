@@ -56,6 +56,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     created_at = models.DateTimeField(auto_now_add=True)
     last_login = models.DateTimeField(blank=True, null=True)
 
+    preferred_llm = models.CharField(max_length=50, default="openai")
+
     objects = SupabaseUserManager()
 
     USERNAME_FIELD = "email"   # for createsuperuser

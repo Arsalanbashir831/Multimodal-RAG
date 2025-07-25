@@ -28,14 +28,18 @@ drf-spectacular-sidecar==2025.7.1
 drf-yasg==1.21.10
 durationpy==0.10
 filelock==3.18.0
+filetype==1.2.0
 flatbuffers==25.2.10
 frozenlist==1.7.0
 fsspec==2025.5.1
+google-ai-generativelanguage==0.6.18
+google-api-core==2.25.1
 google-auth==2.40.3
 googleapis-common-protos==1.70.0
-gotrue
+gotrue==2.12.3
 greenlet==3.2.3
-grpcio==1.73.1
+grpcio==1.74.0
+grpcio-status==1.74.0
 h11==0.16.0
 h2==4.2.0
 hpack==4.1.0
@@ -61,6 +65,7 @@ kubernetes==33.1.0
 langchain==0.3.26
 langchain-community==0.3.27
 langchain-core==0.3.68
+langchain-google-genai==2.1.8
 langchain-openai==0.3.28
 langchain-text-splitters==0.3.8
 langsmith==0.4.5
@@ -90,6 +95,7 @@ pillow==11.3.0
 postgrest==1.1.1
 posthog==5.4.0
 propcache==0.3.2
+proto-plus==1.26.1
 protobuf==6.31.1
 psycopg2-binary==2.9.10
 pyasn1==0.6.1
@@ -99,7 +105,7 @@ pydantic==2.11.7
 pydantic-settings==2.10.1
 pydantic_core==2.33.2
 Pygments==2.19.2
-PyJWT
+PyJWT==2.10.1
 PyMuPDF==1.26.3
 PyPika==0.48.9
 pyproject_hooks==1.2.0
