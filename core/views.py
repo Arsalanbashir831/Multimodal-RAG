@@ -133,17 +133,12 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
             metas.append({
                 "type": "image_caption",
                 "page": p["page"],
+                "file_id": file_id,
                 "path": im,
                 "caption": caption
             })
-
-    # Clean up extracted images after processing
-    for p in pages:
-        for im in p["images"]:
-            try:
-                os.remove(im)
-            except Exception:
-                pass  # Ignore errors during cleanup
+            ids.append(f"{file_id}_img_{chunk_idx}")
+            chunk_idx += 1
 
     if not texts:
         raise ValueError("PDF contained no text or images.")
@@ -164,6 +159,14 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
     # print(f"[DEBUG] Stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
     # for i, t in enumerate(texts[:3]):
     #     print(f"[DEBUG] Example doc {i+1}: {t[:100]}")
+    
+        # Clean up extracted images after processing
+    for p in pages:
+        for im in p["images"]:
+            try:
+                os.remove(im)
+            except Exception:
+                pass  # Ignore errors during cleanup
 
 # --- RAG query: load per-user Chroma and run RetrievalQA ---
 def run_rag_query(user, query, collection_name, k=5):
@@ -786,14 +789,19 @@ class UserFileDeleteView(APIView):
                 if file_obj:
                     if file_obj.chroma_collection:
                         from langchain_community.vectorstores import Chroma
+                        import logging
                         user_chroma_dir = get_user_chroma_dir(user.id)
                         vs = Chroma(
                             collection_name=file_obj.chroma_collection,
                             embedding_function=text_emb,
                             persist_directory=user_chroma_dir,
                         )
-                        vs.delete(where={"file_id": file_obj.id})
-                        vs.persist()
+                        try:
+                            vs.delete(where={"file_id": file_obj.id})
+                            vs.persist()
+                        except Exception as e:
+                            logging.error(f"Failed to delete embeddings for file_id {file_obj.id}: {e}")
+                            return Response({"error": "Failed to delete file embeddings."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                     # Delete local file
                     file_obj.file.delete(save=False)
                     file_obj.delete()
