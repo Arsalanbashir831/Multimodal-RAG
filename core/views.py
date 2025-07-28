@@ -57,10 +57,16 @@ text_emb = OE(model="text-embedding-3-small")
 # --- PDF and Image Processing ---
 def describe_image(image_path):
     raw_image = Image.open(image_path).convert('RGB')
-    inputs = processor(raw_image, return_tensors="pt").to(device)
-    out = blip_model.generate(**inputs)
-    caption = processor.decode(out[0], skip_special_tokens=True)
-    return caption
+    try:
+        inputs = processor([raw_image], padding=True, return_tensors="pt").to(device)
+        out = blip_model.generate(**inputs)
+        # Check if output tensor has at least one sequence
+        if out is None or out.shape[0] == 0:
+            return "No caption generated"
+        caption = processor.decode(out[0], skip_special_tokens=True)
+        return caption
+    except Exception as e:
+        return "No caption generated"
 
 def extract_pdf_pages(pdf_path, image_dir="imgs"):
     os.makedirs(image_dir, exist_ok=True)
@@ -92,6 +98,8 @@ def build_embeddings(pages, text_batch_size=50):
             metadatas.append({"type": "text", "page": p["page"]})
         for im in p["images"]:
             caption = describe_image(im)
+            if not caption or caption.startswith("Image captioning failed"):
+                caption = "No caption generated"
             texts.append(caption)
             metadatas.append({
                 "type": "image_caption",
