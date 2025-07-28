@@ -56,8 +56,8 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 104_857_600
 CORS_ALLOWED_ORIGINS = [
     "http://192.168.10.9:3000",   # client laptop origin (React/Vite/etc)
     "http://localhost:3000",
-"https://buildtechsupply.com",
-'https://ai-doc-coral.vercel.app/'
+    "https://buildtechsupply.com",
+    "https://ai-doc-coral.vercel.app"
 ]
 
 

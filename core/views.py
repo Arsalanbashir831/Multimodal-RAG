@@ -15,6 +15,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 import numpy as np
 from io import BytesIO
+from docx import Document
 from langchain_openai import OpenAIEmbeddings as OE
 from sentence_transformers import SentenceTransformer
 from transformers import BlipProcessor, BlipForConditionalGeneration
@@ -90,6 +91,26 @@ def extract_pdf_pages(pdf_path, image_dir="imgs"):
         pages.append({"page": i, "text": txt, "images": imgs})
     return pages
 
+def extract_docx_text(docx_path):
+    """Extract text from DOCX file"""
+    try:
+        doc = Document(docx_path)
+        full_text = []
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                full_text.append(paragraph.text)
+        
+        # Also extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip():
+                        full_text.append(cell.text)
+        
+        return {"page": 1, "text": "\n".join(full_text), "images": []}
+    except Exception as e:
+        raise ValueError(f"Failed to extract text from DOCX file: {str(e)}")
+
 def build_embeddings(pages, text_batch_size=50):
     texts, metadatas = [], []
     for p in pages:
@@ -124,7 +145,17 @@ def get_user_chroma_dir(user_or_id):
 
 # --- File upload: extract, caption, embed, and store in per-user Chroma ---
 def process_and_store_file(user, file_path, collection_name, file_id=None):
-    pages = extract_pdf_pages(file_path)
+    # Determine file type and extract content accordingly
+    file_extension = file_path.lower().split('.')[-1]
+    
+    if file_extension == 'pdf':
+        pages = extract_pdf_pages(file_path)
+    elif file_extension == 'docx':
+        # For DOCX, we get a single page with all text
+        pages = [extract_docx_text(file_path)]
+    else:
+        raise ValueError(f"Unsupported file type: {file_extension}. Only PDF and DOCX are supported.")
+    
     texts, metas, ids = [], [], []
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     chunk_idx = 0
@@ -150,7 +181,7 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
             chunk_idx += 1
 
     if not texts:
-        raise ValueError("PDF contained no text or images.")
+        raise ValueError(f"{file_extension.upper()} file contained no text or images.")
     user_chroma_dir = get_user_chroma_dir(user)
     vs = Chroma(
         collection_name=collection_name,
@@ -625,6 +656,14 @@ class FileUploadView(APIView):
             return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
 
         ext = uploaded_file.name.split(".")[-1].lower()
+        
+        # Validate file type
+        if ext not in ['pdf', 'docx']:
+            return Response(
+                {"error": "Unsupported file type. Only PDF and DOCX files are supported."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
         filename = f"{uuid4()}.{ext}"
         storage_key = f"{folder}/{filename}"
 
@@ -723,7 +762,7 @@ class UserFilesView(APIView):
 
             files_info = []
             for f in files:
-                if not f["name"].lower().endswith(".pdf"):
+                if not f["name"].lower().endswith((".pdf", ".docx")):
                     continue
 
                 path = full_path(f["name"])

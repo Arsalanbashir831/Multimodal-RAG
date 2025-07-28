@@ -112,6 +112,7 @@ pyproject_hooks
 pyreadline3
 python-dateutil
 python-dotenv
+python-docx
 pytz
 PyYAML
 realtime
