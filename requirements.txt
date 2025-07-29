@@ -63,6 +63,7 @@ jsonschema
 jsonschema-specifications
 kubernetes
 langchain
+langchain-chroma
 langchain-community
 langchain-core
 langchain-google-genai

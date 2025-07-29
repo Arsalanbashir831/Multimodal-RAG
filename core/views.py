@@ -30,7 +30,10 @@ from langchain_openai import OpenAIEmbeddings
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+try:
+    from langchain_chroma import Chroma
+except ImportError:
+    from langchain_community.vectorstores import Chroma
 from langchain_community.chat_models import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
@@ -235,10 +238,14 @@ def run_rag_query(user, query, collection_name, llm=None, k=5):
         return_source_documents=True,
         chain_type_kwargs={"prompt": prompt}
     )
-    result = rag_chain({"query": query})
-    answer = result["result"]
-    sources = result.get("source_documents", [])
-    return answer, sources
+    try:
+        result = rag_chain.invoke({"query": query})
+        answer = result["result"]
+        sources = result.get("source_documents", [])
+        return answer, sources
+    except Exception as e:
+        print(f"RAG query failed: {str(e)}")
+        return "I apologize, but I encountered an error while processing your request. Please try again or contact support if the issue persists.", []
 
 
 def run_rag_pipeline(user, query):
@@ -248,10 +255,15 @@ def run_rag_pipeline(user, query):
     default_model = "openai"
     selected_model = getattr(user, "preferred_llm", default_model)
 
-    # Instantiate corresponding llm object
-    if selected_model == "gemini":
-        llm_instance = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", google_api_key=settings.GEMINI_API_KEY, temperature=0.2)
-    else:
+    # Instantiate corresponding llm object with error handling
+    try:
+        if selected_model == "gemini":
+            llm_instance = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", google_api_key=settings.GEMINI_API_KEY, temperature=0.2)
+        else:
+            llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
+    except Exception as e:
+        # If Gemini fails, fall back to OpenAI
+        print(f"Failed to initialize {selected_model} LLM: {str(e)}")
         llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
 
     answer, sources = run_rag_query(user, query, collection_name, llm=llm_instance)
@@ -868,7 +880,10 @@ class UserFileDeleteView(APIView):
                 file_obj = File.objects.filter(user=user, storage_key=file_path).first()
                 if file_obj:
                     if file_obj.chroma_collection:
-                        from langchain_community.vectorstores import Chroma
+                        try:
+                            from langchain_chroma import Chroma
+                        except ImportError:
+                            from langchain_community.vectorstores import Chroma
                         import logging
                         user_chroma_dir = get_user_chroma_dir(user.id)
                         vs = Chroma(
@@ -932,7 +947,10 @@ class FileDeleteView(APIView):
             return Response({'error': 'File not found.'}, status=404)
         # Remove from ChromaDB using LangChain Chroma vector store
         if file_obj.chroma_collection:
-            from langchain_community.vectorstores import Chroma
+            try:
+                from langchain_chroma import Chroma
+            except ImportError:
+                from langchain_community.vectorstores import Chroma
             user_chroma_dir = get_user_chroma_dir(user_id)
             vs = Chroma(
                 collection_name=file_obj.chroma_collection,
@@ -994,36 +1012,43 @@ class MessageListCreateView(generics.ListCreateAPIView):
         return Response({"messages": data}, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
-        user    = request.user
-        chat_id = self.kwargs["chat_id"]
-        chat    = get_object_or_404(Chat, id=chat_id, user_id=user.id)
+        try:
+            user    = request.user
+            chat_id = self.kwargs["chat_id"]
+            chat    = get_object_or_404(Chat, id=chat_id, user_id=user.id)
 
-        # 1) Save user message
-        ser = self.get_serializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        user_msg = ser.save(sender=user, sender_type="user", chat=chat)
+            # 1) Save user message
+            ser = self.get_serializer(data=request.data)
+            ser.is_valid(raise_exception=True)
+            user_msg = ser.save(sender=user, sender_type="user", chat=chat)
 
-        # 2) RAG -> AI message
-        rag = run_rag_pipeline(user, user_msg.content)
-        ai_msg = Message.objects.create(
-            chat=chat,
-            sender=None,
-            sender_type="ai",
-            content=rag["answer"],
-            sources=rag.get("sources", [])
-        )
+            # 2) RAG -> AI message
+            rag = run_rag_pipeline(user, user_msg.content)
+            ai_msg = Message.objects.create(
+                chat=chat,
+                sender=None,
+                sender_type="ai",
+                content=rag["answer"],
+                sources=rag.get("sources", [])
+            )
 
-        # 3) Flat response
-        return Response(
-            {
-                "id": ai_msg.id,                     # or user_msg.id / chat_id — your choice
-                "chat_id": str(chat.id),
-                "user_message": user_msg.content,
-                "ai_response":  ai_msg.content,
-                "rag_sources": rag.get("sources", [])  # optional
-            },
-            status=status.HTTP_201_CREATED
-        )
+            # 3) Flat response
+            return Response(
+                {
+                    "id": ai_msg.id,                     # or user_msg.id / chat_id — your choice
+                    "chat_id": str(chat.id),
+                    "user_message": user_msg.content,
+                    "ai_response":  ai_msg.content,
+                    "rag_sources": rag.get("sources", [])  # optional
+                },
+                status=status.HTTP_201_CREATED
+            )
+        except Exception as e:
+            print(f"Error in message creation: {str(e)}")
+            return Response(
+                {"error": "Failed to process message. Please try again."}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
