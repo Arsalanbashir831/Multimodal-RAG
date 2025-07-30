@@ -198,7 +198,7 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
             metadatas=metas[i:i+batch_size],
             ids=ids[i:i+batch_size]
         )
-    vs.persist()
+    # Data is automatically persisted in newer versions of ChromaDB
     # print(f"[DEBUG] Stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
     # for i, t in enumerate(texts[:3]):
     #     print(f"[DEBUG] Example doc {i+1}: {t[:100]}")
@@ -893,7 +893,7 @@ class UserFileDeleteView(APIView):
                         )
                         try:
                             vs.delete(where={"file_id": file_obj.id})
-                            vs.persist()
+                            # Data is automatically persisted in newer versions of ChromaDB
                         except Exception as e:
                             logging.error(f"Failed to delete embeddings for file_id {file_obj.id}: {e}")
                             return Response({"error": "Failed to delete file embeddings."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -958,8 +958,7 @@ class FileDeleteView(APIView):
                 persist_directory=user_chroma_dir,
             )
             vs.delete(where={"file_id": file_obj.id})
-            vs.persist()
-            vs.persist()  # Add this line to persist deletion
+            # Data is automatically persisted in newer versions of ChromaDB
         # Delete file from storage and DB
         file_obj.file.delete(save=False)
         file_obj.delete()
