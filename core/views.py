@@ -281,7 +281,20 @@ class UserLLMModelView(APIView):
     def get(self, request):
         user = request.user
         selected = getattr(user, "preferred_llm", "openai")
-        return Response({"preferred_llm": selected}, status=status.HTTP_200_OK)
+        
+        # Get additional information about the model
+        model_info = {
+            "preferred_llm": selected,
+            "available_models": ["openai", "gemini"],
+            "current_model_details": {
+                "name": selected,
+                "provider": "OpenAI" if selected == "openai" else "Google",
+                "model_id": "gpt-4.1-mini" if selected == "openai" else "gemini-2.5-flash-lite",
+                "status": "active"
+            }
+        }
+        
+        return Response(model_info, status=status.HTTP_200_OK)
 
     def post(self, request):
         user = request.user
@@ -576,13 +589,31 @@ class PasswordResetView(APIView):
         if not email:
             return Response({'error': 'Email is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Trigger password reset email through Supabase
-        response = supabase.auth.reset_password_for_email(email, options={'redirect_to': settings.BASE_URL_RESET_PASSWORD})
+        # Validate email format
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, email):
+            return Response({'error': 'Please enter a valid email address.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if hasattr(response, 'error') and response.error:
-            return Response({'error': str(response.error)}, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response({'message': 'Password reset email sent'}, status=status.HTTP_200_OK)
+        try:
+            # Trigger password reset email through Supabase
+            # Supabase handles non-existent users gracefully and returns success for security
+            response = supabase.auth.reset_password_for_email(
+                email, 
+                options={'redirect_to': settings.BASE_URL_RESET_PASSWORD}
+            )
+            
+            # Always return success to prevent email enumeration attacks
+            # Supabase will only send emails to registered users
+            return Response({
+                'message': 'If an account with this email exists, a password reset link has been sent.'
+            }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            print(f"Password reset error: {str(e)}")
+            return Response({
+                'error': 'Failed to send password reset email. Please try again later.'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class PasswordResetConfirmView(APIView):
