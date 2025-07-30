@@ -50,8 +50,14 @@ DEBUG = False
 ALLOWED_HOSTS = ["192.168.1.3","localhost", "127.0.0.1","148.230.84.83","app.buildtechsupply.com"]
 #CSRF_TRUSTED_ORIGINS = ["http://192.168.10.9:8000"]
 
-DATA_UPLOAD_MAX_MEMORY_SIZE = 104_857_600
-FILE_UPLOAD_MAX_MEMORY_SIZE = 104_857_600
+# File upload settings for large files
+DATA_UPLOAD_MAX_MEMORY_SIZE = 104_857_600  # 100MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 104_857_600  # 100MB
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
+FILE_UPLOAD_TEMP_DIR = '/tmp'
+
+# Timeout settings for large file processing
+REQUEST_TIMEOUT = 300  # 5 minutes
 
 CORS_ALLOWED_ORIGINS = [
     "http://192.168.10.9:3000",   # client laptop origin (React/Vite/etc)
