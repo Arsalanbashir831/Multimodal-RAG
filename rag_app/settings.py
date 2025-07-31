@@ -47,14 +47,16 @@ if not url:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ["192.168.1.3","localhost", "127.0.0.1","148.230.84.83","app.buildtechsupply.com"]
+ALLOWED_HOSTS = ["192.168.1.3","localhost", "127.0.0.1","148.230.84.83","app.buildtechsupply.com","192.168.1.8"]
 #CSRF_TRUSTED_ORIGINS = ["http://192.168.10.9:8000"]
 
 # File upload settings for large files
 DATA_UPLOAD_MAX_MEMORY_SIZE = 104_857_600  # 100MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 104_857_600  # 100MB
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
-FILE_UPLOAD_TEMP_DIR = '/tmp'
+#FILE_UPLOAD_TEMP_DIR = '/tmp'
+
+#FILE_UPLOAD_TEMP_DIR = os.path.join(os.environ.get('TEMP', 'C:/temp'), 'django_uploads')
 
 # Timeout settings for large file processing
 REQUEST_TIMEOUT = 300  # 5 minutes
