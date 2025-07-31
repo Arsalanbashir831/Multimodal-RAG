@@ -198,7 +198,7 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
             metadatas=metas[i:i+batch_size],
             ids=ids[i:i+batch_size]
         )
-    vs.persist()
+    #vs.persist()
     # print(f"[DEBUG] Stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
     # for i, t in enumerate(texts[:3]):
     #     print(f"[DEBUG] Example doc {i+1}: {t[:100]}")
@@ -214,16 +214,19 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
 # --- RAG query: load per-user Chroma and run RetrievalQA ---
 def run_rag_query(user, query, collection_name, llm=None, k=5):
     user_chroma_dir = get_user_chroma_dir(user)
-    if not Path(user_chroma_dir).exists():
-        return "No documents found for this user.", []
+    # if not Path(user_chroma_dir).exists():
+    #     return "No documents found for this user.", []
     vs = Chroma(
         persist_directory=user_chroma_dir,
         embedding_function=text_emb,
         collection_name=collection_name,
     )
+
     prompt_template = (
-        "You are a helpful assistant. Make sense of the current context provided and answer the question. Explain the answer in detail. "
-        "If unsure, say I do not have enough information to answer the question in soft tone. '\n\n"
+        "You are a helpful AIDoc assistant.If user greet you, you should greet back."
+        "You are given content extracted from a document, make sense of the current context provided and answer the question. Explain the answer in detail. "
+        "If the context does not contain enough information to answer confidently, politely respond with correct grammar, like this"
+        "'I apologize, based on the context, I don’t have enough information to answer that. Make query according to the document. Change the model may help. '\n\n"
         "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
     prompt = PromptTemplate(
@@ -267,7 +270,8 @@ def run_rag_pipeline(user, query):
         llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
 
     answer, sources = run_rag_query(user, query, collection_name, llm=llm_instance)
-    return {"answer": answer, "sources": [doc.page_content for doc in sources]}
+    sources = [{"page_content": doc.page_content, "document_name": File.objects.get(id=doc.metadata.get("file_id")).filename, "page_number": doc.metadata.get("page")} for doc in sources]
+    return {"answer": answer, "sources": sources}
 
 
 from rest_framework.permissions import IsAuthenticated
@@ -314,9 +318,12 @@ def get_chroma_collection_name(user):
 # Create your views here.
 
 from supabase import create_client, Client
+from supabase.lib.client_options import ClientOptions
+from gotrue.errors import AuthApiError
 import os
 
 from datetime import datetime
+
 
 # SUPABASE_URL = os.getenv('SUPABASE_URL')
 # SUPABASE_KEY = os.getenv('SUPABASE_KEY')
@@ -351,7 +358,28 @@ class RegisterView(APIView):
                 }
             })
         except AuthApiError as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            # If user already exists but is not verified, resend verification email
+            if "User already registered" in str(e) or "already been registered" in str(e):
+                try:
+                    # Resend verification email for existing unverified user
+                    resend_resp = supabase.auth.resend({
+                        'type': 'signup',
+                        'email': data['email'],
+                        'options': {
+                            'redirect_to': settings.BASE_URL_SIGNIN
+                        }
+                    })
+                    return Response(
+                        {'message': 'Verification email has been resent. Please check your email and verify your account.'},
+                        status=status.HTTP_200_OK
+                    )
+                except Exception as resend_error:
+                    return Response(
+                        {'error': f'Failed to resend verification email: {str(resend_error)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            else:
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         # At this point, resp.user is guaranteed to exist
         supa_user = resp.user  # <— has .id and .email :contentReference[oaicite:0]{index=0}
@@ -392,6 +420,8 @@ class RegisterView(APIView):
             {'message': 'Registration successful. Please verify your email.'},
             status=status.HTTP_201_CREATED
         )
+
+
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 from .serializers import UserSerializer
@@ -674,6 +704,7 @@ class VerifyOtpView(APIView):
 import uuid
 import os
 
+
 class SupabaseOptions:
     def __init__(self, token):
         self.headers = {"Authorization": f"Bearer {token}"}
@@ -707,8 +738,12 @@ class FileUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        filename = f"{uuid4()}.{ext}"
-        storage_key = f"{folder}/{filename}"
+        # Use original filename for storage
+        import re
+        original_filename = uploaded_file.name
+        # Sanitize filename to remove unwanted characters and avoid path traversal
+        sanitized_filename = re.sub(r'[^a-zA-Z0-9_.-]', '_', original_filename)
+        storage_key = f"{folder}/{sanitized_filename}"
 
         try:
             file_bytes = uploaded_file.read()
@@ -924,7 +959,7 @@ class UserFileDeleteView(APIView):
                         )
                         try:
                             vs.delete(where={"file_id": file_obj.id})
-                            vs.persist()
+                            #vs.persist()
                         except Exception as e:
                             logging.error(f"Failed to delete embeddings for file_id {file_obj.id}: {e}")
                             return Response({"error": "Failed to delete file embeddings."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -989,8 +1024,8 @@ class FileDeleteView(APIView):
                 persist_directory=user_chroma_dir,
             )
             vs.delete(where={"file_id": file_obj.id})
-            vs.persist()
-            vs.persist()  # Add this line to persist deletion
+            #vs.persist()
+            #vs.persist()  # Add this line to persist deletion
         # Delete file from storage and DB
         file_obj.file.delete(save=False)
         file_obj.delete()
@@ -1009,6 +1044,28 @@ class ChatListCreateView(generics.ListCreateAPIView):
         user = self.request.user  # this is a Django User instance now
         user_id = user.id
         serializer.save(user_id=user_id)
+
+
+class ChatUpdateDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, chat_id, user):
+        return get_object_or_404(Chat, id=chat_id, user_id=user.id)
+
+    def patch(self, request, chat_id):
+        chat = self.get_object(chat_id, request.user)
+        title = request.data.get('title')
+        if not title or not title.strip():
+            return Response({'error': 'Title is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        chat.title = title.strip()
+        chat.save()
+        serializer = ChatSerializer(chat)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, chat_id):
+        chat = self.get_object(chat_id, request.user)
+        chat.delete()
+        return Response({'message': 'Chat deleted.'}, status=status.HTTP_204_NO_CONTENT)
 
 
 def serialize_message(m: Message):
@@ -1086,6 +1143,78 @@ from rest_framework.response import Response
 from rest_framework import status
 from supabase import create_client
 from django.conf import settings
+
+class SendVerificationEmailView(APIView):
+    """
+    POST endpoint to send a verification email to a user if not verified in Supabase.
+    Accepts 'email' in POST data (optional if authenticated user).
+    """
+    def post(self, request):
+        email = request.data.get('email')
+        if not email and request.user and hasattr(request.user, 'email'):
+            email = request.user.email
+        if not email:
+            return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        # Check user status in Supabase
+        try:
+            # list_users() does not accept email param; fetch all and filter
+            users = supabase.auth.admin.list_users() or []
+            user_obj = None
+            for u in users:
+                # Support both dict and object for user
+                email_val = u['email'] if isinstance(u, dict) else getattr(u, 'email', None)
+                if email_val and email_val.lower() == email.lower():
+                    user_obj = u
+                    break
+            if not user_obj:
+                return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            # Optionally, get latest user details by id
+            user_id = user_obj['id'] if isinstance(user_obj, dict) else getattr(user_obj, 'id', None)
+            user_details = supabase.auth.admin.get_user_by_id(user_id)
+            # user_details may be dict or object
+            email_confirmed_at = None
+            if isinstance(user_details, dict):
+                data = user_details.get('data', {})
+                email_confirmed_at = data.get('email_confirmed_at')
+            else:
+                email_confirmed_at = getattr(user_details, 'email_confirmed_at', None)
+            if email_confirmed_at:
+                return Response({'error': 'User already verified.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Resend verification email for existing unverified user
+          
+            try:
+                # print("email",email)
+                # print("BASE_URL_SIGNIN",settings.BASE_URL_SIGNIN)
+                resend_resp = supabase.auth.resend({
+                    'type': 'signup',
+                    'email': email,
+                    'options': {
+                        'email_redirect_to': settings.BASE_URL_SIGNIN
+                    }
+                })
+                if resend_resp is not None:
+                    # Check for error or success in resend_resp
+                    error = None
+                    if isinstance(resend_resp, dict):
+                        error = resend_resp.get('error')
+                    else:
+                        error = getattr(resend_resp, 'error', None)
+                    if error:
+                        return Response({'error': f'Verification email not sent: {error}'}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response(
+                        {'message': 'Verification email has been resent. Please check your email and verify your account.'},
+                        status=status.HTTP_200_OK
+                    )
+                else:
+                    return Response({'error': 'Failed to resend verification email'}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as resend_error:
+                return Response(
+                    {'error': f'Failed to resend verification email: {str(resend_error)}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        except Exception as e:
+            return Response({'error': f'Failed to send verification email: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class TokenRefreshView(APIView):
