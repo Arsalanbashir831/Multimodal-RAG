@@ -965,7 +965,7 @@ class UserFileDeleteView(APIView):
                         )
                         try:
                             vs.delete(where={"file_id": file_obj.id})
-                            vs.persist()
+                            # Data is automatically persisted in newer versions of ChromaDB
                         except Exception as e:
                             logging.error(f"Failed to delete embeddings for file_id {file_obj.id}: {e}")
                             return Response({"error": "Failed to delete file embeddings."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1030,8 +1030,7 @@ class FileDeleteView(APIView):
                 persist_directory=user_chroma_dir,
             )
             vs.delete(where={"file_id": file_obj.id})
-            vs.persist()
-            vs.persist()  # Add this line to persist deletion
+            # Data is automatically persisted in newer versions of ChromaDB
         # Delete file from storage and DB
         file_obj.file.delete(save=False)
         file_obj.delete()
