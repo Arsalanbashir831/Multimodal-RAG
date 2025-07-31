@@ -44,7 +44,7 @@ load_dotenv()
 from django.conf import settings
 from django.db import transaction
 
-# Initialize ChromaDB client (simple local setup)
+# Initialize ChromaDB clients (simple local setup)
 chroma_client = chromadb.Client(chromadb.config.Settings(
     persist_directory="chroma_data"
 ))
