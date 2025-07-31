@@ -63,7 +63,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://192.168.10.9:3000",   # client laptop origin (React/Vite/etc)
     "http://localhost:3000",
     "https://buildtechsupply.com",
-    "https://ai-doc-coral.vercel.app"
+    "https://ai-doc-coral.vercel.app",
+    "https://ai-doc-chatbot-one.vercel.app"
 ]
 
 

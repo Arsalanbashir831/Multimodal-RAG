@@ -148,68 +148,101 @@ def get_user_chroma_dir(user_or_id):
 
 # --- File upload: extract, caption, embed, and store in per-user Chroma ---
 def process_and_store_file(user, file_path, collection_name, file_id=None):
-    # Determine file type and extract content accordingly
-    file_extension = file_path.lower().split('.')[-1]
-    
-    if file_extension == 'pdf':
-        pages = extract_pdf_pages(file_path)
-    elif file_extension == 'docx':
-        # For DOCX, we get a single page with all text
-        pages = [extract_docx_text(file_path)]
-    else:
-        raise ValueError(f"Unsupported file type: {file_extension}. Only PDF and DOCX are supported.")
-    
-    texts, metas, ids = [], [], []
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunk_idx = 0
-    for p in pages:
-        if p["text"].strip():
-            chunks = splitter.split_text(p["text"])
-            for chunk in chunks:
-                texts.append(chunk)
-                metas.append({"type": "text", "page": p["page"], "file_id": file_id})
-                ids.append(f"{file_id}_{chunk_idx}")
+    try:
+        print(f"Processing file: {file_path}")
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        # Determine file type and extract content accordingly
+        file_extension = file_path.lower().split('.')[-1]
+        print(f"File extension: {file_extension}")
+        
+        if file_extension == 'pdf':
+            print("Extracting PDF pages...")
+            pages = extract_pdf_pages(file_path)
+        elif file_extension == 'docx':
+            print("Extracting DOCX text...")
+            # For DOCX, we get a single page with all text
+            pages = [extract_docx_text(file_path)]
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}. Only PDF and DOCX are supported.")
+        
+        print(f"Extracted {len(pages)} pages")
+        
+        texts, metas, ids = [], [], []
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        chunk_idx = 0
+        
+        for p in pages:
+            if p["text"].strip():
+                chunks = splitter.split_text(p["text"])
+                for chunk in chunks:
+                    texts.append(chunk)
+                    metas.append({"type": "text", "page": p["page"], "file_id": file_id})
+                    ids.append(f"{file_id}_{chunk_idx}")
+                    chunk_idx += 1
+            for im in p["images"]:
+                caption = describe_image(im)
+                texts.append(caption)
+                metas.append({
+                    "type": "image_caption",
+                    "page": p["page"],
+                    "file_id": file_id,
+                    "path": im,
+                    "caption": caption
+                })
+                ids.append(f"{file_id}_img_{chunk_idx}")
                 chunk_idx += 1
-        for im in p["images"]:
-            caption = describe_image(im)
-            texts.append(caption)
-            metas.append({
-                "type": "image_caption",
-                "page": p["page"],
-                "file_id": file_id,
-                "path": im,
-                "caption": caption
-            })
-            ids.append(f"{file_id}_img_{chunk_idx}")
-            chunk_idx += 1
 
-    if not texts:
-        raise ValueError(f"{file_extension.upper()} file contained no text or images.")
-    user_chroma_dir = get_user_chroma_dir(user)
-    vs = Chroma(
-        collection_name=collection_name,
-        embedding_function=text_emb,
-        persist_directory=user_chroma_dir,
-    )
-    batch_size = 100
-    for i in range(0, len(texts), batch_size):
-        vs.add_texts(
-            texts=texts[i:i+batch_size],
-            metadatas=metas[i:i+batch_size],
-            ids=ids[i:i+batch_size]
+        print(f"Created {len(texts)} text chunks")
+        
+        if not texts:
+            raise ValueError(f"{file_extension.upper()} file contained no text or images.")
+        
+        user_chroma_dir = get_user_chroma_dir(user)
+        print(f"Chroma directory: {user_chroma_dir}")
+        
+        # Ensure directory exists
+        os.makedirs(user_chroma_dir, exist_ok=True)
+        
+        vs = Chroma(
+            collection_name=collection_name,
+            embedding_function=text_emb,
+            persist_directory=user_chroma_dir,
         )
-    vs.persist()
-    # print(f"[DEBUG] Stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
-    # for i, t in enumerate(texts[:3]):
-    #     print(f"[DEBUG] Example doc {i+1}: {t[:100]}")
-    
+        
+        print(f"Adding {len(texts)} texts to ChromaDB...")
+        batch_size = 100
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+            batch_metas = metas[i:i+batch_size]
+            batch_ids = ids[i:i+batch_size]
+            vs.add_texts(
+                texts=batch_texts,
+                metadatas=batch_metas,
+                ids=batch_ids
+            )
+            print(f"Added batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}")
+        
+        # The newer version of langchain-chroma doesn't have persist() method
+        # The data is automatically persisted when using persist_directory
+        print(f"Successfully stored {len(texts)} documents for user {user.id} in {user_chroma_dir}")
+        
         # Clean up extracted images after processing
-    for p in pages:
-        for im in p["images"]:
-            try:
-                os.remove(im)
-            except Exception:
-                pass  # Ignore errors during cleanup
+        for p in pages:
+            for im in p["images"]:
+                try:
+                    os.remove(im)
+                except Exception:
+                    pass  # Ignore errors during cleanup
+                    
+    except Exception as e:
+        print(f"Error in process_and_store_file: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
 # --- RAG query: load per-user Chroma and run RetrievalQA ---
 def run_rag_query(user, query, collection_name, llm=None, k=5):
@@ -739,7 +772,15 @@ class FileUploadView(APIView):
             file_path = file_obj.file.path
 
             # 3) Create embeddings (sync)
-            process_and_store_file(user, file_path, collection_name, file_id=file_obj.id)
+            try:
+                print(f"Starting embedding process for file: {file_path}")
+                process_and_store_file(user, file_path, collection_name, file_id=file_obj.id)
+                print(f"Embedding process completed successfully for file: {file_path}")
+            except Exception as e:
+                print(f"Embedding process failed for file {file_path}: {str(e)}")
+                # Delete the file from database if embedding failed
+                file_obj.delete()
+                raise e
 
             # Delete local file after processing
             import os
