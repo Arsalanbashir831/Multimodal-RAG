@@ -43,6 +43,7 @@ load_dotenv()
 
 from django.conf import settings
 from django.db import transaction, models
+from django.utils import timezone
 
 # Initialize ChromaDB clients (simple local setup)
 chroma_client = chromadb.Client(chromadb.config.Settings(
@@ -1298,8 +1299,12 @@ class ChatUpdateDeleteView(APIView):
         title = request.data.get('title')
         if not title or not title.strip():
             return Response({'error': 'Title is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update title and explicitly update the updated_at field
         chat.title = title.strip()
+        chat.updated_at = timezone.now()
         chat.save()
+        
         serializer = ChatSerializer(chat)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1361,7 +1366,11 @@ class MessageListCreateView(generics.ListCreateAPIView):
                 sources=rag.get("sources", [])
             )
 
-            # 3) Flat response
+            # 3) Update chat's updated_at field to reflect new activity
+            chat.updated_at = timezone.now()
+            chat.save()
+
+            # 4) Flat response
             return Response(
                 {
                     "id": ai_msg.id,                     # or user_msg.id / chat_id — your choice
