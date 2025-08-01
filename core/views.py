@@ -599,7 +599,7 @@ class RegisterView(APIView):
                         'type': 'signup',
                         'email': data['email'],
                         'options': {
-                            'redirect_to': settings.BASE_URL_SIGNIN
+                            'email_redirect_to': settings.BASE_URL_SIGNIN
                         }
                     })
                     return Response(
