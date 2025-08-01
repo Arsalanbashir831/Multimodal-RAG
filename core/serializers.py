@@ -27,8 +27,8 @@ class FileSerializer(serializers.ModelSerializer):
 class ChatSerializer(serializers.ModelSerializer):
     class Meta:
         model = Chat
-        fields = ['id', 'title', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = ['id', 'title', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 # serializers.py
 from rest_framework import serializers

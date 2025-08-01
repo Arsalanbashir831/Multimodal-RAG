@@ -42,7 +42,7 @@ from django.shortcuts import get_object_or_404
 load_dotenv()
 
 from django.conf import settings
-from django.db import transaction
+from django.db import transaction, models
 
 # Initialize ChromaDB clients (simple local setup)
 chroma_client = chromadb.Client(chromadb.config.Settings(
@@ -247,19 +247,23 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
 # --- RAG query: load per-user Chroma and run RetrievalQA ---
 def run_rag_query(user, query, collection_name, llm=None, k=5):
     user_chroma_dir = get_user_chroma_dir(user)
-    # if not Path(user_chroma_dir).exists():
-    #     return "No documents found for this user.", []
+    if not Path(user_chroma_dir).exists():
+        # For general questions, provide a helpful response without mentioning documents
+        if any(word in query.lower() for word in ['hello', 'hi', 'hey', 'greetings', 'how are you', 'good morning', 'good afternoon', 'good evening']):
+            return "Hello! I'm here to help you with your questions. Feel free to ask me anything!", []
+        return "I don't have any documents to reference, but I'm happy to help with general questions!", []
+    
     vs = Chroma(
         persist_directory=user_chroma_dir,
         embedding_function=text_emb,
         collection_name=collection_name,
     )
-
     prompt_template = (
-        "You are a helpful AIDoc assistant.If user greet you, you should greet back."
-        "You are given content extracted from a document, make sense of the current context provided and answer the question. Explain the answer in detail. "
-        "If the context does not contain enough information to answer confidently, politely respond with correct grammar, like this"
-        "'I apologize, based on the context, I don’t have enough information to answer that. Make query according to the document. Change the model may help. '\n\n"
+        "You are a helpful assistant. Use the provided context and conversation history to answer the question. "
+        "If the question refers to previous messages in the conversation, make sure to consider that context. "
+        "When you find relevant information in the context, provide specific details and facts from the documents. "
+        "If you cannot find specific information in the context, respond with a helpful message like 'I don't have enough information to answer this question' or 'I cannot find specific information about that in the available documents.' "
+        "Be honest about what information is available and what is not. Provide detailed answers when you have specific information from the documents.\n\n"
         "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
     prompt = PromptTemplate(
@@ -278,13 +282,113 @@ def run_rag_query(user, query, collection_name, llm=None, k=5):
         result = rag_chain.invoke({"query": query})
         answer = result["result"]
         sources = result.get("source_documents", [])
+        
+        # Check if sources are actually relevant (have reasonable similarity scores)
+        # This is a heuristic - if the answer is very generic, the sources might not be relevant
+        print(f"Retrieved {len(sources)} source documents")
+        
+        # Simple logic: only include sources if documents were actually retrieved
+        if not sources:
+            print(f"No documents retrieved - returning empty sources")
+            return answer, []
+        
+        # If documents were retrieved, include them as sources
+        print(f"Documents retrieved - including sources")
         return answer, sources
     except Exception as e:
         print(f"RAG query failed: {str(e)}")
         return "I apologize, but I encountered an error while processing your request. Please try again or contact support if the issue persists.", []
 
 
-def run_rag_pipeline(user, query):
+def run_rag_pipeline(user, query, chat_id=None):
+    # First, check if this is a question that doesn't need document retrieval
+    query_lower = query.lower().strip()
+    
+    # Basic greetings and casual conversation
+    basic_question_keywords = [
+        'hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening',
+        'how are you', 'how are you doing', 'what\'s up', 'sup', 'yo',
+        'thanks', 'thank you', 'bye', 'goodbye', 'see you', 'good night',
+        'nice to meet you', 'pleasure to meet you', 'good to see you'
+    ]
+    
+    # Conversation context questions (about previous messages)
+    context_keywords = [
+        'what did we discuss', 'what did we talk about', 'what was our conversation',
+        'what did i ask', 'what did you say', 'what was your answer', 'what did you tell me',
+        'what was mentioned', 'what did we cover', 'what was the topic', 'what were we discussing',
+        'what did we just talk about', 'what was our last conversation', 'what did you just say',
+        'can you repeat', 'can you remind me', 'what was that again', 'what did you just tell me',
+        'what was the last thing', 'what did we just discuss', 'what was our previous topic',
+        'what did you mention', 'what did you explain', 'what did you describe',
+        'what was the subject', 'what was the theme', 'what were we covering'
+    ]
+    
+    # General knowledge questions that don't need documents
+    general_knowledge_keywords = [
+        'what is the weather', 'what time is it', 'what day is it', 'what date is it',
+        'how are you', 'what can you do', 'what are your capabilities', 'what are your features',
+        'help', 'what do you do', 'what is your purpose', 'what is your function','what is my name',    ]
+    
+    # Document-specific question indicators
+    document_keywords = [
+        'what does the document', 'what does the report', 'what does the file', 'what does the pdf',
+        'what does the docx', 'what does the file say', 'what does the report say', 'what does the document say',
+        'what is in the document', 'what is in the report', 'what is in the file', 'what is in the pdf',
+        'what is in the docx', 'what does it say in the document', 'what does it say in the report',
+        'what does it say in the file', 'what does it say in the pdf', 'what does it say in the docx',
+        'what is mentioned in the document', 'what is mentioned in the report', 'what is mentioned in the file',
+        'what is mentioned in the pdf', 'what is mentioned in the docx', 'what is stated in the document',
+        'what is stated in the report', 'what is stated in the file', 'what is stated in the pdf',
+        'what is stated in the docx', 'what is written in the document', 'what is written in the report',
+        'what is written in the file', 'what is written in the pdf', 'what is written in the docx',
+        'what are the contents of', 'what are the details in', 'what are the facts in',
+        'what are the figures in', 'what are the numbers in', 'what are the statistics in',
+        'what are the data in', 'what are the results in', 'what are the findings in',
+        'what are the conclusions in', 'what are the recommendations in', 'what are the suggestions in',
+        'what does the', 'what is in the', 'what is mentioned in the', 'what is stated in the',
+        'what is written in the', 'what are the contents of the', 'what are the details in the',
+        'what are the facts in the', 'what are the figures in the', 'what are the numbers in the',
+        'what are the statistics in the', 'what are the data in the', 'what are the results in the',
+        'what are the findings in the', 'what are the conclusions in the', 'what are the recommendations in the',
+        'what are the suggestions in the', 'what does it say about', 'what is mentioned about',
+        'what is stated about', 'what is written about', 'what are the details about',
+        'what are the facts about', 'what are the figures about', 'what are the numbers about',
+        'what are the statistics about', 'what are the data about', 'what are the results about',
+        'what are the findings about', 'what are the conclusions about', 'what are the recommendations about'
+    ]
+    
+    # Check if it's any type of question that doesn't need document retrieval
+    is_basic_question = any(keyword in query_lower for keyword in basic_question_keywords)
+    is_context_question = any(keyword in query_lower for keyword in context_keywords)
+    is_general_knowledge = any(keyword in query_lower for keyword in general_knowledge_keywords)
+    is_document_question = any(keyword in query_lower for keyword in document_keywords)
+    
+    # For questions that don't need document retrieval, provide appropriate responses
+    if is_basic_question or is_general_knowledge:
+        if is_basic_question:
+            if any(greeting in query_lower for greeting in ['hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening']):
+                response = "Hello! I'm here to help you with your questions. Feel free to ask me anything about your documents or any general questions!"
+            elif any(thanks in query_lower for thanks in ['thanks', 'thank you']):
+                response = "You're welcome! I'm happy to help. Is there anything else you'd like to know?"
+            elif any(bye in query_lower for bye in ['bye', 'goodbye', 'see you', 'good night']):
+                response = "Goodbye! Feel free to come back if you have more questions."
+            else:
+                response = "Hello! How can I help you today?"
+        elif is_general_knowledge:
+            response = "I'm an AI assistant designed to help you with questions about your uploaded documents. I can analyze PDFs, DOCX files, and answer questions based on their content."
+        
+        print(f"Non-document question detected: '{query}' -> Direct response without RAG")
+        return {"answer": response, "sources": []}
+    
+    # For context questions, use conversation context but don't show sources
+    if is_context_question:
+        print(f"Context question detected: '{query}' -> Will use conversation context without document retrieval")
+        # Set a flag to indicate this is a context-only question
+        use_context_only = True
+    else:
+        use_context_only = False
+
     collection_name = get_chroma_collection_name(user)
 
     # Retrieve user selected LLM model or default
@@ -302,9 +406,104 @@ def run_rag_pipeline(user, query):
         print(f"Failed to initialize {selected_model} LLM: {str(e)}")
         llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
 
-    answer, sources = run_rag_query(user, query, collection_name, llm=llm_instance)
-    sources = [{"page_content": doc.page_content, "document_name": File.objects.get(id=doc.metadata.get("file_id")).filename, "page_number": doc.metadata.get("page")} for doc in sources]
-    return {"answer": answer, "sources": sources}
+    # Get conversation context if chat_id is provided
+    conversation_context = ""
+    if chat_id:
+        try:
+            # Get recent messages from the chat (last 10 messages for context)
+            # Exclude the current message being processed
+            recent_messages = Message.objects.filter(
+                chat_id=chat_id,
+                chat__user_id=user.id
+            ).order_by('-timestamp')[:10]
+            
+            # Build conversation context from recent messages
+            if recent_messages:
+                conversation_parts = []
+                for msg in reversed(recent_messages):  # Reverse to get chronological order
+                    if msg.sender_type == "user":
+                        conversation_parts.append(f"User: {msg.content}")
+                    elif msg.sender_type == "ai":
+                        # Include sources in AI responses for better context only if sources exist
+                        ai_response = msg.content
+                        if hasattr(msg, 'sources') and msg.sources and len(msg.sources) > 0:
+                            ai_response += f"\n[Source: 1 document referenced]"
+                        conversation_parts.append(f"Assistant: {ai_response}")
+                
+                conversation_context = "\n".join(conversation_parts)
+                print(f"Conversation context length: {len(conversation_context)} characters")
+                print(f"Conversation context preview: {conversation_context[:200]}...")
+        except Exception as e:
+            print(f"Error getting conversation context: {str(e)}")
+
+    # Enhance the query with conversation context
+    enhanced_query = query
+    if conversation_context:
+        enhanced_query = f"Based on the following conversation history and the current question, provide a comprehensive answer. Consider the context from previous messages when responding:\n\nConversation History:\n{conversation_context}\n\nCurrent Question: {query}"
+        print(f"Enhanced query with context length: {len(enhanced_query)} characters")
+
+    # Handle different types of questions
+    if use_context_only:
+        # For context questions, use conversation context but don't retrieve documents
+        print(f"Processing context-only question with conversation history")
+        # Create a simple prompt for context questions
+        context_prompt = f"Based on the following conversation history, answer the question naturally:\n\nConversation History:\n{conversation_context}\n\nQuestion: {query}\nAnswer:"
+        
+        # Use the LLM directly without RAG
+        try:
+            if selected_model == "gemini":
+                llm_instance = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", google_api_key=settings.GEMINI_API_KEY, temperature=0.2)
+            else:
+                llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
+            
+            response = llm_instance.invoke(context_prompt)
+            answer = response.content if hasattr(response, 'content') else str(response)
+            print(f"Context question answered without document retrieval")
+            return {"answer": answer, "sources": []}
+        except Exception as e:
+            print(f"Error processing context question: {str(e)}")
+            return {"answer": "I'm sorry, I encountered an error processing your question. Please try again.", "sources": []}
+    else:
+        # For document questions or general questions, use RAG
+        answer, sources = run_rag_query(user, enhanced_query, collection_name, llm=llm_instance)
+        
+        # Only include the highest matching document as source
+        enhanced_sources = []
+        if sources and len(sources) > 0:
+            # Take only the first (highest matching) document
+            best_doc = sources[0]
+            print(f"Retrieved {len(sources)} documents, using highest match as source")
+            
+            if hasattr(best_doc, 'metadata') and best_doc.metadata:
+                source_info = {
+                    "content": best_doc.page_content,
+                    "page": best_doc.metadata.get("page", "Unknown"),
+                    "file_id": best_doc.metadata.get("file_id", "Unknown"),
+                    "type": best_doc.metadata.get("type", "text")
+                }
+                
+                # Try to get the filename from the file_id
+                try:
+                    if source_info["file_id"] != "Unknown":
+                        file_obj = File.objects.get(id=source_info["file_id"])
+                        source_info["filename"] = file_obj.filename
+                    else:
+                        source_info["filename"] = "Unknown"
+                except File.DoesNotExist:
+                    source_info["filename"] = "Unknown"
+                    
+                enhanced_sources.append(source_info)
+            else:
+                # Fallback for documents without metadata
+                enhanced_sources.append({
+                    "content": best_doc.page_content,
+                    "page": "Unknown",
+                    "file_id": "Unknown",
+                    "type": "text",
+                    "filename": "Unknown"
+                })
+        
+        return {"answer": answer, "sources": enhanced_sources}
 
 
 from rest_framework.permissions import IsAuthenticated
@@ -1079,7 +1278,8 @@ class ChatListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user  # this is a Django User instance now
         user_id = user.id
-        return Chat.objects.filter(user_id=user_id)
+        # Sort chats by the latest updated timestamp (most recent first)
+        return Chat.objects.filter(user_id=user_id).order_by('-updated_at', '-created_at')
 
     def perform_create(self, serializer):
         user = self.request.user  # this is a Django User instance now
@@ -1152,7 +1352,7 @@ class MessageListCreateView(generics.ListCreateAPIView):
             user_msg = ser.save(sender=user, sender_type="user", chat=chat)
 
             # 2) RAG -> AI message
-            rag = run_rag_pipeline(user, user_msg.content)
+            rag = run_rag_pipeline(user, user_msg.content, chat_id=chat_id)
             ai_msg = Message.objects.create(
                 chat=chat,
                 sender=None,
@@ -1168,7 +1368,7 @@ class MessageListCreateView(generics.ListCreateAPIView):
                     "chat_id": str(chat.id),
                     "user_message": user_msg.content,
                     "ai_response":  ai_msg.content,
-                    "rag_sources": rag.get("sources", [])  # optional
+                    "rag_sources": rag.get("sources", [])  # optional - now includes filename, page, and content
                 },
                 status=status.HTTP_201_CREATED
             )
