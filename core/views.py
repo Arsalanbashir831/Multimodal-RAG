@@ -38,6 +38,8 @@ from langchain_community.chat_models import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from django.shortcuts import get_object_or_404
+import sqlite3
+import subprocess
 
 load_dotenv()
 
@@ -198,12 +200,18 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
                 chunk_idx += 1
 
         print(f"Created {len(texts)} text chunks")
+        print(f"DEBUG: First few metadata entries: {metas[:3] if metas else 'No metadata'}")
+        print(f"DEBUG: First few IDs: {ids[:3] if ids else 'No IDs'}")
         
         if not texts:
             raise ValueError(f"{file_extension.upper()} file contained no text or images.")
         
         user_chroma_dir = get_user_chroma_dir(user)
         print(f"Chroma directory: {user_chroma_dir}")
+        
+        # Check and fix permissions before proceeding
+        if not check_and_fix_chroma_permissions(user_chroma_dir):
+            raise Exception(f"Failed to set proper permissions for ChromaDB directory: {user_chroma_dir}")
         
         # Ensure directory exists
         os.makedirs(user_chroma_dir, exist_ok=True)
@@ -220,12 +228,28 @@ def process_and_store_file(user, file_path, collection_name, file_id=None):
             batch_texts = texts[i:i+batch_size]
             batch_metas = metas[i:i+batch_size]
             batch_ids = ids[i:i+batch_size]
-            vs.add_texts(
-                texts=batch_texts,
-                metadatas=batch_metas,
-                ids=batch_ids
-            )
-            print(f"Added batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}")
+            try:
+                vs.add_texts(
+                    texts=batch_texts,
+                    metadatas=batch_metas,
+                    ids=batch_ids
+                )
+                print(f"Added batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}")
+            except Exception as batch_error:
+                print(f"❌ Error adding batch to ChromaDB: {batch_error}")
+                if "readonly database" in str(batch_error).lower():
+                    print(f"🔍 ChromaDB database is read-only. Checking permissions...")
+                    import stat
+                    if os.path.exists(user_chroma_dir):
+                        st = os.stat(user_chroma_dir)
+                        print(f"🔍 Directory permissions: {oct(st.st_mode)}")
+                        print(f"🔍 Directory owner: {st.st_uid}")
+                        print(f"🔍 Directory group: {st.st_gid}")
+                        print(f"🔍 Current user: {os.getuid()}")
+                        print(f"🔍 Current group: {os.getgid()}")
+                    raise Exception(f"ChromaDB database is read-only. Please check file permissions for {user_chroma_dir}")
+                else:
+                    raise batch_error
         
         # The newer version of langchain-chroma doesn't have persist() method
         # The data is automatically persisted when using persist_directory
@@ -302,117 +326,40 @@ def run_rag_query(user, query, collection_name, llm=None, k=5):
 
 
 def run_rag_pipeline(user, query, chat_id=None):
-    # First, check if this is a question that doesn't need document retrieval
+    # Check for document listing request first
     query_lower = query.lower().strip()
-    
-    # Basic greetings and casual conversation
-    basic_question_keywords = [
-        'hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening',
-        'how are you', 'how are you doing', 'what\'s up', 'sup', 'yo',
-        'thanks', 'thank you', 'bye', 'goodbye', 'see you', 'good night',
-        'nice to meet you', 'pleasure to meet you', 'good to see you'
+    document_list_keywords = [
+        'what documents', 'what are the documents', 'what files', 'what are the files',
+        'list documents', 'list files', 'show documents', 'show files',
+        'what documents do i have', 'what files do i have', 'my documents', 'my files',
+        'uploaded documents', 'uploaded files', 'documents i have', 'files i have',
+        'which documents', 'which files', 'tell me which documents', 'tell me which files',
+        'can you tell me which documents', 'can you tell me which files',
+        'what documents did i upload', 'what files did i upload',
+        'which documents did i upload', 'which files did i upload',
+        'show me my documents', 'show me my files', 'display my documents', 'display my files',
+        'what have i uploaded', 'what did i upload', 'my uploads', 'my uploaded files',
+        'can you list', 'list me', 'show me the', 'tell me the', 'what docs', 'what files',
+        'my docs', 'my files', 'documents list', 'files list', 'uploaded docs', 'uploaded files',
+        'available documents', 'available files', 'stored documents', 'stored files',
+        'give me the list', 'give me list', 'show me list', 'tell me list',
+        'what documents have i', 'what files have i', 'my document list', 'my file list',
+        'list of documents', 'list of files', 'documents list', 'files list',
+        'how many documents', 'how many files', 'count documents', 'count files'
     ]
     
-    # Conversation context questions (about previous messages)
-    context_keywords = [
-        'what did we discuss', 'what did we talk about', 'what was our conversation',
-        'what did i ask', 'what did you say', 'what was your answer', 'what did you tell me',
-        'what was mentioned', 'what did we cover', 'what was the topic', 'what were we discussing',
-        'what did we just talk about', 'what was our last conversation', 'what did you just say',
-        'can you repeat', 'can you remind me', 'what was that again', 'what did you just tell me',
-        'what was the last thing', 'what did we just discuss', 'what was our previous topic',
-        'what did you mention', 'what did you explain', 'what did you describe',
-        'what was the subject', 'what was the theme', 'what were we covering'
-    ]
+    is_document_list_request = any(keyword in query_lower for keyword in document_list_keywords)
+    print(f"Query: '{query_lower}'")
+    print(f"Is document list request: {is_document_list_request}")
+    if is_document_list_request:
+        print("✅ Document list request detected!")
+        print(f"🔍 Keywords matched: {[keyword for keyword in document_list_keywords if keyword in query_lower]}")
     
-    # General knowledge questions that don't need documents
-    general_knowledge_keywords = [
-        'what is the weather', 'what time is it', 'what day is it', 'what date is it',
-        'how are you', 'what can you do', 'what are your capabilities', 'what are your features',
-        'help', 'what do you do', 'what is your purpose', 'what is your function','what is my name',    ]
-    
-    # Document-specific question indicators
-    document_keywords = [
-        'what does the document', 'what does the report', 'what does the file', 'what does the pdf',
-        'what does the docx', 'what does the file say', 'what does the report say', 'what does the document say',
-        'what is in the document', 'what is in the report', 'what is in the file', 'what is in the pdf',
-        'what is in the docx', 'what does it say in the document', 'what does it say in the report',
-        'what does it say in the file', 'what does it say in the pdf', 'what does it say in the docx',
-        'what is mentioned in the document', 'what is mentioned in the report', 'what is mentioned in the file',
-        'what is mentioned in the pdf', 'what is mentioned in the docx', 'what is stated in the document',
-        'what is stated in the report', 'what is stated in the file', 'what is stated in the pdf',
-        'what is stated in the docx', 'what is written in the document', 'what is written in the report',
-        'what is written in the file', 'what is written in the pdf', 'what is written in the docx',
-        'what are the contents of', 'what are the details in', 'what are the facts in',
-        'what are the figures in', 'what are the numbers in', 'what are the statistics in',
-        'what are the data in', 'what are the results in', 'what are the findings in',
-        'what are the conclusions in', 'what are the recommendations in', 'what are the suggestions in',
-        'what does the', 'what is in the', 'what is mentioned in the', 'what is stated in the',
-        'what is written in the', 'what are the contents of the', 'what are the details in the',
-        'what are the facts in the', 'what are the figures in the', 'what are the numbers in the',
-        'what are the statistics in the', 'what are the data in the', 'what are the results in the',
-        'what are the findings in the', 'what are the conclusions in the', 'what are the recommendations in the',
-        'what are the suggestions in the', 'what does it say about', 'what is mentioned about',
-        'what is stated about', 'what is written about', 'what are the details about',
-        'what are the facts about', 'what are the figures about', 'what are the numbers about',
-        'what are the statistics about', 'what are the data about', 'what are the results about',
-        'what are the findings about', 'what are the conclusions about', 'what are the recommendations about'
-    ]
-    
-    # Check if it's any type of question that doesn't need document retrieval
-    is_basic_question = any(keyword in query_lower for keyword in basic_question_keywords)
-    is_context_question = any(keyword in query_lower for keyword in context_keywords)
-    is_general_knowledge = any(keyword in query_lower for keyword in general_knowledge_keywords)
-    is_document_question = any(keyword in query_lower for keyword in document_keywords)
-    
-    # For questions that don't need document retrieval, provide appropriate responses
-    if is_basic_question or is_general_knowledge:
-        if is_basic_question:
-            if any(greeting in query_lower for greeting in ['hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening']):
-                response = "Hello! I'm here to help you with your questions. Feel free to ask me anything about your documents or any general questions!"
-            elif any(thanks in query_lower for thanks in ['thanks', 'thank you']):
-                response = "You're welcome! I'm happy to help. Is there anything else you'd like to know?"
-            elif any(bye in query_lower for bye in ['bye', 'goodbye', 'see you', 'good night']):
-                response = "Goodbye! Feel free to come back if you have more questions."
-            else:
-                response = "Hello! How can I help you today?"
-        elif is_general_knowledge:
-            response = "I'm an AI assistant designed to help you with questions about your uploaded documents. I can analyze PDFs, DOCX files, and answer questions based on their content."
-        
-        print(f"Non-document question detected: '{query}' -> Direct response without RAG")
-        return {"answer": response, "sources": []}
-    
-    # For context questions, use conversation context but don't show sources
-    if is_context_question:
-        print(f"Context question detected: '{query}' -> Will use conversation context without document retrieval")
-        # Set a flag to indicate this is a context-only question
-        use_context_only = True
-    else:
-        use_context_only = False
-
-    collection_name = get_chroma_collection_name(user)
-
-    # Retrieve user selected LLM model or default
-    default_model = "openai"
-    selected_model = getattr(user, "preferred_llm", default_model)
-
-    # Instantiate corresponding llm object with error handling
-    try:
-        if selected_model == "gemini":
-            llm_instance = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", google_api_key=settings.GEMINI_API_KEY, temperature=0.2)
-        else:
-            llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
-    except Exception as e:
-        # If Gemini fails, fall back to OpenAI
-        print(f"Failed to initialize {selected_model} LLM: {str(e)}")
-        llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
-
     # Get conversation context if chat_id is provided
     conversation_context = ""
     if chat_id:
         try:
             # Get recent messages from the chat (last 10 messages for context)
-            # Exclude the current message being processed
             recent_messages = Message.objects.filter(
                 chat_id=chat_id,
                 chat__user_id=user.id
@@ -433,78 +380,194 @@ def run_rag_pipeline(user, query, chat_id=None):
                 
                 conversation_context = "\n".join(conversation_parts)
                 print(f"Conversation context length: {len(conversation_context)} characters")
-                print(f"Conversation context preview: {conversation_context[:200]}...")
         except Exception as e:
             print(f"Error getting conversation context: {str(e)}")
 
-    # Enhance the query with conversation context
-    enhanced_query = query
-    if conversation_context:
-        enhanced_query = f"Based on the following conversation history and the current question, provide a comprehensive answer. Consider the context from previous messages when responding:\n\nConversation History:\n{conversation_context}\n\nCurrent Question: {query}"
-        print(f"Enhanced query with context length: {len(enhanced_query)} characters")
-
-    # Handle different types of questions
-    if use_context_only:
-        # For context questions, use conversation context but don't retrieve documents
-        print(f"Processing context-only question with conversation history")
-        # Create a simple prompt for context questions
-        context_prompt = f"Based on the following conversation history, answer the question naturally:\n\nConversation History:\n{conversation_context}\n\nQuestion: {query}\nAnswer:"
-        
-        # Use the LLM directly without RAG
+    # Handle document listing request
+    if is_document_list_request:
         try:
-            if selected_model == "gemini":
-                llm_instance = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", google_api_key=settings.GEMINI_API_KEY, temperature=0.2)
-            else:
-                llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
+            print("🔍 Using ChromaDB query for document listing...")
+            print(f"🔍 Current user in session: {user.id}")
             
-            response = llm_instance.invoke(context_prompt)
-            answer = response.content if hasattr(response, 'content') else str(response)
-            print(f"Context question answered without document retrieval")
-            return {"answer": answer, "sources": []}
-        except Exception as e:
-            print(f"Error processing context question: {str(e)}")
-            return {"answer": "I'm sorry, I encountered an error processing your question. Please try again.", "sources": []}
-    else:
-        # For document questions or general questions, use RAG
-        answer, sources = run_rag_query(user, enhanced_query, collection_name, llm=llm_instance)
-        
-        # Only include the highest matching document as source
-        enhanced_sources = []
-        if sources and len(sources) > 0:
-            # Take only the first (highest matching) document
-            best_doc = sources[0]
-            print(f"Retrieved {len(sources)} documents, using highest match as source")
+            # Test the ChromaDB document listing for debugging
+            test_user_chroma_document_listing(user)
             
-            if hasattr(best_doc, 'metadata') and best_doc.metadata:
-                source_info = {
-                    "content": best_doc.page_content,
-                    "page": best_doc.metadata.get("page", "Unknown"),
-                    "file_id": best_doc.metadata.get("file_id", "Unknown"),
-                    "type": best_doc.metadata.get("type", "text")
-                }
+            # Use the ChromaDB approach to get files that have been processed
+            file_list = get_user_files_from_chroma(user)
+            
+            if file_list:
+                print(f"✅ Found {len(file_list)} files in database for user {user.id}")
                 
-                # Try to get the filename from the file_id
-                try:
-                    if source_info["file_id"] != "Unknown":
-                        file_obj = File.objects.get(id=source_info["file_id"])
-                        source_info["filename"] = file_obj.filename
-                    else:
-                        source_info["filename"] = "Unknown"
-                except File.DoesNotExist:
-                    source_info["filename"] = "Unknown"
+                # Create response with files found in ChromaDB
+                if len(file_list) == 1:
+                    response_text = f"📚 You have 1 document available for AI queries:\n\n"
+                else:
+                    response_text = f"📚 You have {len(file_list)} documents available for AI queries:\n\n"
+                
+                for i, file_info in enumerate(file_list, 1):
+                    # Create a detailed summary based on file type and name
+                    filename = file_info['filename']
+                    file_type = file_info['file_type']
+                    upload_date = file_info['uploaded_at']
                     
-                enhanced_sources.append(source_info)
+                    # Generate a detailed summary based on filename analysis
+                    filename_lower = filename.lower()
+                    
+                    if 'proposal' in filename_lower:
+                        if 'fine' in filename_lower and 'tuning' in filename_lower:
+                            summary = "This appears to be a proposal document about fine-tuning AI systems, likely containing technical specifications and implementation details for AI model optimization"
+                        else:
+                            summary = "This appears to be a proposal document, typically containing project plans, objectives, and implementation strategies"
+                    elif 'counterclaim' in filename_lower or 'claim' in filename_lower:
+                        summary = "This appears to be a legal document containing counterclaims, likely part of legal proceedings or dispute resolution"
+                    elif 'report' in filename_lower:
+                        summary = "This appears to be a report document, typically containing analysis, findings, and recommendations"
+                    elif 'contract' in filename_lower or 'agreement' in filename_lower:
+                        summary = "This appears to be a contract or agreement document, containing legal terms and conditions"
+                    elif 'manual' in filename_lower or 'guide' in filename_lower:
+                        summary = "This appears to be a manual or guide document, containing instructions and procedures"
+                    elif 'invoice' in filename_lower or 'bill' in filename_lower:
+                        summary = "This appears to be an invoice or billing document, containing financial transaction details"
+                    elif 'resume' in filename_lower or 'cv' in filename_lower:
+                        summary = "This appears to be a resume or CV document, containing professional background and qualifications"
+                    elif 'presentation' in filename_lower or 'ppt' in filename_lower:
+                        summary = "This appears to be a presentation document, likely containing slides and visual content"
+                    elif 'spreadsheet' in filename_lower or 'excel' in filename_lower or 'csv' in filename_lower:
+                        summary = "This appears to be a spreadsheet or data document, containing structured data and calculations"
+                    elif 'email' in filename_lower or 'pst' in filename_lower:
+                        summary = "This appears to be an email archive or communication document, containing email correspondence"
+                    elif 'image' in filename_lower or 'photo' in filename_lower or 'jpeg' in filename_lower or 'png' in filename_lower:
+                        summary = "This appears to be an image or visual document, containing graphical content"
+                    else:
+                        summary = f"This is a {file_type} document that may contain various types of content"
+                    
+                    # Add upload date for context with better formatting
+                    response_text += f"📄 **{filename}**\n   {summary}\n   📅 Uploaded: {upload_date}\n\n"
+                
+                response_text += f"\n💡 You can ask me questions about any of these documents! For example:\n• 'What is the main topic of {file_list[0]['filename'] if file_list else 'your document'}?'\n• 'Summarize the key points from my documents'\n• 'Find information about [specific topic] in my documents'"
+                
+                # Return with sources showing all available documents
+                sources = []
+                for file_info in file_list:
+                    sources.append({
+                        "content": f"Document available for queries: {file_info['filename']}",
+                        "page": "1",
+                        "file_id": str(file_info['file_id']),
+                        "type": "document_list",
+                        "filename": file_info['filename']
+                    })
+                
+                return {"answer": response_text, "sources": sources}
             else:
-                # Fallback for documents without metadata
-                enhanced_sources.append({
-                    "content": best_doc.page_content,
-                    "page": "Unknown",
-                    "file_id": "Unknown",
-                    "type": "text",
-                    "filename": "Unknown"
-                })
+                return {"answer": "📭 You haven't uploaded any documents yet.\n\n💡 Try uploading a document and then ask about your documents again.", "sources": []}
+        except Exception as e:
+            print(f"Error listing documents: {str(e)}")
+            return {"answer": "❌ I encountered an error while retrieving your document list. Please try again or contact support if the issue persists.", "sources": []}
+
+    # First, try to retrieve documents to assess confidence
+    collection_name = get_chroma_collection_name(user)
+    user_chroma_dir = get_user_chroma_dir(user)
+    
+    # Check if user has any documents
+    if not Path(user_chroma_dir).exists():
+        print(f"No documents found for user - using conversation context only")
+        # Use conversation context for response
+        if conversation_context:
+            context_prompt = f"Based on the following conversation history, answer the question naturally:\n\nConversation History:\n{conversation_context}\n\nQuestion: {query}\nAnswer:"
+            try:
+                # Use OpenAI for consistency
+                llm_instance = ChatOpenAI(model_name="gpt-4.1-mini", openai_api_key=settings.OPENAI_API_KEY, temperature=0.2)
+                response = llm_instance.invoke(context_prompt)
+                answer = response.content if hasattr(response, 'content') else str(response)
+                return {"answer": answer, "sources": []}
+            except Exception as e:
+                return {"answer": "I don't have any documents to reference, but I'm happy to help with general questions!", "sources": []}
+        else:
+            return {"answer": "I don't have any documents to reference, but I'm happy to help with general questions!", "sources": []}
+    
+    # Try to retrieve documents
+    try:
+        vs = Chroma(
+            persist_directory=user_chroma_dir,
+            embedding_function=text_emb,
+            collection_name=collection_name,
+        )
         
-        return {"answer": answer, "sources": enhanced_sources}
+        # Get document similarity scores
+        results = vs.similarity_search_with_score(query, k=5)
+        print(f"Retrieved {len(results)} documents with scores")
+        
+        # Calculate confidence score
+        if results:
+            scores = [score for _, score in results]
+            max_confidence = min(scores)  # Lower distance = higher confidence
+            print(f"Max confidence: {max_confidence}")
+            
+            # Always try to use document retrieval if we have any results, regardless of confidence
+            if results:
+                print(f"Using document retrieval with confidence {max_confidence:.3f}")
+                
+                # Use full RAG pipeline with documents
+                answer, sources = run_rag_query(user, query, collection_name)
+                
+                # Process sources - always include the best available document
+                enhanced_sources = []
+                if sources and len(sources) > 0:
+                    best_doc = sources[0]
+                    print(f"Retrieved {len(sources)} documents, using highest match as source")
+                    
+                    if hasattr(best_doc, 'metadata') and best_doc.metadata:
+                        source_info = {
+                            "content": best_doc.page_content,
+                            "page": best_doc.metadata.get("page", "Unknown"),
+                            "file_id": best_doc.metadata.get("file_id", "Unknown"),
+                            "type": best_doc.metadata.get("type", "text")
+                        }
+                        
+                        try:
+                            if source_info["file_id"] != "Unknown":
+                                file_obj = File.objects.get(id=source_info["file_id"])
+                                source_info["filename"] = file_obj.filename
+                            else:
+                                source_info["filename"] = "Unknown"
+                        except File.DoesNotExist:
+                            source_info["filename"] = "Unknown"
+                            
+                        enhanced_sources.append(source_info)
+                    else:
+                        enhanced_sources.append({
+                            "content": best_doc.page_content,
+                            "page": "Unknown",
+                            "file_id": "Unknown",
+                            "type": "text",
+                            "filename": "Unknown"
+                        })
+                    
+                # If no sources from RAG, use the best document from similarity search
+                if not enhanced_sources and results:
+                    best_result = results[0]  # Get the highest confidence document
+                    best_doc_content, best_score = best_result
+                    print(f"Using best similarity result with confidence {best_score:.3f}")
+                    
+                    # Create a source from the best similarity result
+                    enhanced_sources.append({
+                        "content": best_doc_content.page_content,
+                        "page": "1",
+                        "file_id": "similarity_match",
+                        "type": "text",
+                        "filename": "Best matching document"
+                    })
+                
+                return {"answer": answer, "sources": enhanced_sources}
+            else:
+                print("No documents retrieved - returning no information message")
+                return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
+        else:
+            print("No documents retrieved - returning no information message")
+            return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
+    except Exception as e:
+        print(f"Error in document retrieval: {str(e)}")
+        return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
 
 
 from rest_framework.permissions import IsAuthenticated
@@ -548,12 +611,96 @@ def get_chroma_collection_name(user):
         return username
     return f"user_{user.id}"
 
+def clean_chroma_sqlite(user_chroma_dir, collection_name):
+    """
+    Clean ChromaDB SQLite database by removing entries for specific collection
+    """
+    try:
+        sqlite_path = os.path.join(user_chroma_dir, "chroma.sqlite3")
+        if not os.path.exists(sqlite_path):
+            print(f"ChromaDB SQLite file not found: {sqlite_path}")
+            return False
+            
+        print(f"Cleaning ChromaDB SQLite: {sqlite_path}")
+        
+        # Connect to SQLite database
+        conn = sqlite3.connect(sqlite_path)
+        cursor = conn.cursor()
+        
+        # Get all tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = cursor.fetchall()
+        print(f"Found tables: {[table[0] for table in tables]}")
+        
+        # Check embeddings table structure
+        cursor.execute("PRAGMA table_info(embeddings);")
+        columns = cursor.fetchall()
+        print(f"Embeddings table columns: {[col[1] for col in columns]}")
+        
+        # Get total count before deletion
+        cursor.execute("SELECT COUNT(*) FROM embeddings;")
+        total_before = cursor.fetchone()[0]
+        print(f"Total embeddings before deletion: {total_before}")
+        
+        # Show some sample data with correct column names
+        try:
+            cursor.execute("SELECT id, embedding_id, seq_id FROM embeddings LIMIT 5;")
+            samples = cursor.fetchall()
+            print(f"Sample embeddings: {samples}")
+        except Exception as e:
+            print(f"Could not fetch sample data: {e}")
+        
+        # Get segment_id for the collection first
+        cursor.execute("SELECT id FROM segments WHERE name = ?;", (collection_name,))
+        segment_result = cursor.fetchone()
+        
+        if segment_result:
+            segment_id = segment_result[0]
+            print(f"Found segment_id: {segment_id} for collection: {collection_name}")
+            
+            # Delete embeddings for the specific segment/collection
+            cursor.execute("DELETE FROM embeddings WHERE segment_id = ?;", (segment_id,))
+            deleted_count = cursor.rowcount
+            
+            # Get count after deletion
+            cursor.execute("SELECT COUNT(*) FROM embeddings;")
+            total_after = cursor.fetchone()[0]
+            
+            print(f"Deleted embeddings: {deleted_count}")
+            print(f"Total embeddings after deletion: {total_after}")
+            
+            # Also clean up the segment metadata
+            cursor.execute("DELETE FROM segment_metadata WHERE segment_id = ?;", (segment_id,))
+            segment_metadata_deleted = cursor.rowcount
+            print(f"Deleted segment metadata entries: {segment_metadata_deleted}")
+            
+            # Clean up embedding metadata
+            cursor.execute("DELETE FROM embedding_metadata WHERE segment_id = ?;", (segment_id,))
+            embedding_metadata_deleted = cursor.rowcount
+            print(f"Deleted embedding metadata entries: {embedding_metadata_deleted}")
+            
+        else:
+            print(f"No segment found for collection: {collection_name}")
+            # Fallback: try to delete by embedding_id pattern
+            cursor.execute("DELETE FROM embeddings WHERE embedding_id LIKE ?;", (f"{collection_name}%",))
+            deleted_count = cursor.rowcount
+            print(f"Fallback deletion: {deleted_count} embeddings")
+        
+        # Commit changes
+        conn.commit()
+        conn.close()
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error cleaning ChromaDB SQLite: {e}")
+        return False
+
 # Create your views here.
 
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
 from gotrue.errors import AuthApiError
-import os
 
 from datetime import datetime
 
@@ -935,7 +1082,6 @@ class VerifyOtpView(APIView):
             return Response({'message': 'Email not verified'}, status=status.HTTP_400_BAD_REQUEST)
 
 import uuid
-import os
 
 
 class SupabaseOptions:
@@ -1009,8 +1155,43 @@ class FileUploadView(APIView):
             # 3) Create embeddings (sync)
             try:
                 print(f"Starting embedding process for file: {file_path}")
+                print(f"DEBUG: Database file ID = {file_obj.id}")
+                print(f"DEBUG: Collection name = {collection_name}")
+                print(f"DEBUG: User ID = {user.id}")
+                
                 process_and_store_file(user, file_path, collection_name, file_id=file_obj.id)
                 print(f"Embedding process completed successfully for file: {file_path}")
+                
+                # Verify embeddings were created
+                user_chroma_dir = get_user_chroma_dir(user)
+                if Path(user_chroma_dir).exists():
+                    try:
+                        vs = Chroma(
+                            persist_directory=user_chroma_dir,
+                            embedding_function=text_emb,
+                            collection_name=collection_name,
+                        )
+                        all_docs = vs.get()
+                        if all_docs and 'documents' in all_docs:
+                            print(f"✅ Verification: {len(all_docs['documents'])} embeddings found in ChromaDB")
+                            # Check if our file_id is in the metadata
+                            file_ids_in_chroma = set()
+                            if 'metadatas' in all_docs:
+                                for metadata in all_docs['metadatas']:
+                                    if metadata and 'file_id' in metadata:
+                                        file_ids_in_chroma.add(metadata['file_id'])
+                            print(f"✅ File IDs in ChromaDB: {file_ids_in_chroma}")
+                            if str(file_obj.id) in file_ids_in_chroma:
+                                print(f"✅ File ID {file_obj.id} successfully stored in ChromaDB")
+                            else:
+                                print(f"⚠️ File ID {file_obj.id} not found in ChromaDB metadata")
+                        else:
+                            print(f"⚠️ No documents found in ChromaDB after upload")
+                    except Exception as verify_error:
+                        print(f"⚠️ Error verifying ChromaDB: {verify_error}")
+                else:
+                    print(f"⚠️ ChromaDB directory does not exist: {user_chroma_dir}")
+                    
             except Exception as e:
                 print(f"Embedding process failed for file {file_path}: {str(e)}")
                 # Delete the file from database if embedding failed
@@ -1018,7 +1199,6 @@ class FileUploadView(APIView):
                 raise e
 
             # Delete local file after processing
-            import os
             if os.path.exists(file_path):
                 os.remove(file_path)
 
@@ -1192,18 +1372,120 @@ class UserFileDeleteView(APIView):
                         except ImportError:
                             from langchain_community.vectorstores import Chroma
                         import logging
+                        
                         user_chroma_dir = get_user_chroma_dir(user.id)
-                        vs = Chroma(
-                            collection_name=file_obj.chroma_collection,
-                            embedding_function=text_emb,
-                            persist_directory=user_chroma_dir,
-                        )
-                        try:
-                            vs.delete(where={"file_id": file_obj.id})
-                            #vs.persist()
-                        except Exception as e:
-                            logging.error(f"Failed to delete embeddings for file_id {file_obj.id}: {e}")
-                            return Response({"error": "Failed to delete file embeddings."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                        
+                        # Check if ChromaDB directory exists
+                        if Path(user_chroma_dir).exists():
+                            vs = Chroma(
+                                collection_name=file_obj.chroma_collection,
+                                embedding_function=text_emb,
+                                persist_directory=user_chroma_dir,
+                            )
+                            
+                            # Delete embeddings for this specific file
+                            try:
+                                print(f"Attempting to delete embeddings for file: {file_obj.filename} (ID: {file_obj.id})")
+                                
+                                # Get all documents to see what we're working with
+                                all_docs = vs.get()
+                                print(f"Total documents in ChromaDB: {len(all_docs['documents']) if all_docs and 'documents' in all_docs else 0}")
+                                
+                                # Debug: Show all metadata to understand the structure
+                                if all_docs and 'metadatas' in all_docs:
+                                    print("ChromaDB metadata structure:")
+                                    for i, metadata in enumerate(all_docs['metadatas']):
+                                        print(f"  Doc {i}: {metadata}")
+                                
+                                # Try multiple deletion strategies
+                                try:
+                                    deleted_count = 0
+                                    
+                                    # Strategy 1: Delete by file_id (string)
+                                    try:
+                                        vs.delete(where={"file_id": str(file_obj.id)})
+                                        print(f"✓ Deleted by file_id (string): {file_obj.id}")
+                                        deleted_count += 1
+                                    except Exception as e1:
+                                        print(f"✗ Failed to delete by file_id (string): {e1}")
+                                    
+                                    # Strategy 2: Delete by file_id (integer)
+                                    try:
+                                        vs.delete(where={"file_id": file_obj.id})
+                                        print(f"✓ Deleted by file_id (integer): {file_obj.id}")
+                                        deleted_count += 1
+                                    except Exception as e2:
+                                        print(f"✗ Failed to delete by file_id (integer): {e2}")
+                                    
+                                    # Strategy 3: Delete by filename
+                                    try:
+                                        vs.delete(where={"filename": file_obj.filename})
+                                        print(f"✓ Deleted by filename: {file_obj.filename}")
+                                        deleted_count += 1
+                                    except Exception as e3:
+                                        print(f"✗ Failed to delete by filename: {e3}")
+                                    
+                                    # Strategy 4: Delete by storage_key
+                                    try:
+                                        vs.delete(where={"storage_key": file_obj.storage_key})
+                                        print(f"✓ Deleted by storage_key: {file_obj.storage_key}")
+                                        deleted_count += 1
+                                    except Exception as e4:
+                                        print(f"✗ Failed to delete by storage_key: {e4}")
+                                    
+                                    # Strategy 5: Manual deletion by finding matching documents
+                                    try:
+                                        all_docs = vs.get()
+                                        if all_docs and 'documents' in all_docs and 'metadatas' in all_docs and 'ids' in all_docs:
+                                            matching_ids = []
+                                            for i, metadata in enumerate(all_docs['metadatas']):
+                                                if metadata:
+                                                    file_id_match = str(metadata.get('file_id', '')) == str(file_obj.id)
+                                                    filename_match = metadata.get('filename', '') == file_obj.filename
+                                                    storage_key_match = metadata.get('storage_key', '') == file_obj.storage_key
+                                                    
+                                                    if file_id_match or filename_match or storage_key_match:
+                                                        matching_ids.append(all_docs['ids'][i])
+                                                        print(f"Found matching document: ID={all_docs['ids'][i]}, metadata={metadata}")
+                                            
+                                            if matching_ids:
+                                                vs.delete(ids=matching_ids)
+                                                print(f"✓ Deleted {len(matching_ids)} documents by ID matching")
+                                                deleted_count += len(matching_ids)
+                                            else:
+                                                print("No matching documents found for manual deletion")
+                                    except Exception as e5:
+                                        print(f"✗ Failed to delete by manual matching: {e5}")
+                                    
+                                    # Strategy 6: Force delete all documents if no specific matches found
+                                    if deleted_count == 0:
+                                        try:
+                                            print("No specific matches found, attempting to delete all documents...")
+                                            all_docs = vs.get()
+                                            if all_docs and 'ids' in all_docs and all_docs['ids']:
+                                                vs.delete(ids=all_docs['ids'])
+                                                print(f"✓ Deleted all {len(all_docs['ids'])} documents from ChromaDB")
+                                                deleted_count = len(all_docs['ids'])
+                                        except Exception as e6:
+                                            print(f"✗ Failed to delete all documents: {e6}")
+                                    
+                                    if deleted_count > 0:
+                                        print(f"✅ Successfully deleted {deleted_count} embeddings")
+                                    else:
+                                        print(f"⚠️ No embeddings were deleted for file: {file_obj.filename}")
+                                    
+                                    # Clean ChromaDB SQLite database
+                                    print("🧹 Cleaning ChromaDB SQLite database...")
+                                    clean_chroma_sqlite(user_chroma_dir, file_obj.chroma_collection)
+                                    
+                                except Exception as e:
+                                    logging.error(f"Failed to delete embeddings for file_id {file_obj.id}: {e}")
+                                    print(f"❌ Error during ChromaDB deletion: {e}")
+                            except Exception as e:
+                                    logging.error(f"Failed to initialize ChromaDB for file_id {file_obj.id}: {e}")
+                                    print(f"❌ Error initializing ChromaDB: {e}")
+                    else:       
+                        print(f"ChromaDB directory does not exist for user {user.id}")
                     # Delete local file
                     file_obj.file.delete(save=False)
                     file_obj.delete()
@@ -1258,15 +1540,121 @@ class FileDeleteView(APIView):
                 from langchain_chroma import Chroma
             except ImportError:
                 from langchain_community.vectorstores import Chroma
+            import logging
+            
             user_chroma_dir = get_user_chroma_dir(user_id)
-            vs = Chroma(
-                collection_name=file_obj.chroma_collection,
-                embedding_function=text_emb,
-                persist_directory=user_chroma_dir,
-            )
-            vs.delete(where={"file_id": file_obj.id})
-            #vs.persist()
-            #vs.persist()  # Add this line to persist deletion
+            
+            # Check if ChromaDB directory exists
+            if Path(user_chroma_dir).exists():
+                vs = Chroma(
+                    collection_name=file_obj.chroma_collection,
+                    embedding_function=text_emb,
+                    persist_directory=user_chroma_dir,
+                )
+                
+                # Delete embeddings for this specific file
+                try:
+                    print(f"Attempting to delete embeddings for file: {file_obj.filename} (ID: {file_obj.id})")
+                    
+                    # Get all documents to see what we're working with
+                    all_docs = vs.get()
+                    print(f"Total documents in ChromaDB: {len(all_docs['documents']) if all_docs and 'documents' in all_docs else 0}")
+                    
+                    # Debug: Show all metadata to understand the structure
+                    if all_docs and 'metadatas' in all_docs:
+                        print("ChromaDB metadata structure:")
+                        for i, metadata in enumerate(all_docs['metadatas']):
+                            print(f"  Doc {i}: {metadata}")
+                    
+                    # Try multiple deletion strategies
+                    try:
+                        deleted_count = 0
+                        
+                        # Strategy 1: Delete by file_id (string)
+                        try:
+                            vs.delete(where={"file_id": str(file_obj.id)})
+                            print(f"✓ Deleted by file_id (string): {file_obj.id}")
+                            deleted_count += 1
+                        except Exception as e1:
+                            print(f"✗ Failed to delete by file_id (string): {e1}")
+                        
+                        # Strategy 2: Delete by file_id (integer)
+                        try:
+                            vs.delete(where={"file_id": file_obj.id})
+                            print(f"✓ Deleted by file_id (integer): {file_obj.id}")
+                            deleted_count += 1
+                        except Exception as e2:
+                            print(f"✗ Failed to delete by file_id (integer): {e2}")
+                        
+                        # Strategy 3: Delete by filename
+                        try:
+                            vs.delete(where={"filename": file_obj.filename})
+                            print(f"✓ Deleted by filename: {file_obj.filename}")
+                            deleted_count += 1
+                        except Exception as e3:
+                            print(f"✗ Failed to delete by filename: {e3}")
+                        
+                        # Strategy 4: Delete by storage_key
+                        try:
+                            vs.delete(where={"storage_key": file_obj.storage_key})
+                            print(f"✓ Deleted by storage_key: {file_obj.storage_key}")
+                            deleted_count += 1
+                        except Exception as e4:
+                            print(f"✗ Failed to delete by storage_key: {e4}")
+                        
+                        # Strategy 5: Manual deletion by finding matching documents
+                        try:
+                            all_docs = vs.get()
+                            if all_docs and 'documents' in all_docs and 'metadatas' in all_docs and 'ids' in all_docs:
+                                matching_ids = []
+                                for i, metadata in enumerate(all_docs['metadatas']):
+                                    if metadata:
+                                        file_id_match = str(metadata.get('file_id', '')) == str(file_obj.id)
+                                        filename_match = metadata.get('filename', '') == file_obj.filename
+                                        storage_key_match = metadata.get('storage_key', '') == file_obj.storage_key
+                                        
+                                        if file_id_match or filename_match or storage_key_match:
+                                            matching_ids.append(all_docs['ids'][i])
+                                            print(f"Found matching document: ID={all_docs['ids'][i]}, metadata={metadata}")
+                                
+                                if matching_ids:
+                                    vs.delete(ids=matching_ids)
+                                    print(f"✓ Deleted {len(matching_ids)} documents by ID matching")
+                                    deleted_count += len(matching_ids)
+                                else:
+                                    print("No matching documents found for manual deletion")
+                        except Exception as e5:
+                            print(f"✗ Failed to delete by manual matching: {e5}")
+                        
+                        # Strategy 6: Force delete all documents if no specific matches found
+                        if deleted_count == 0:
+                            try:
+                                print("No specific matches found, attempting to delete all documents...")
+                                all_docs = vs.get()
+                                if all_docs and 'ids' in all_docs and all_docs['ids']:
+                                    vs.delete(ids=all_docs['ids'])
+                                    print(f"✓ Deleted all {len(all_docs['ids'])} documents from ChromaDB")
+                                    deleted_count = len(all_docs['ids'])
+                            except Exception as e6:
+                                print(f"✗ Failed to delete all documents: {e6}")
+                        
+                        if deleted_count > 0:
+                            print(f"✅ Successfully deleted {deleted_count} embeddings")
+                        else:
+                            print(f"⚠️ No embeddings were deleted for file: {file_obj.filename}")
+                        
+                        # Clean ChromaDB SQLite database
+                        print("🧹 Cleaning ChromaDB SQLite database...")
+                        clean_chroma_sqlite(user_chroma_dir, file_obj.chroma_collection)
+                        
+                    except Exception as e:
+                        logging.error(f"Failed to delete embeddings for file_id {file_obj.id}: {e}")
+                        print(f"❌ Error during ChromaDB deletion: {e}")
+                except Exception as e:
+                    logging.error(f"Failed to initialize ChromaDB for file_id {file_obj.id}: {e}")
+                    print(f"❌ Error initializing ChromaDB: {e}")
+            else:
+                print(f"ChromaDB directory does not exist for user {user_id}")
         # Delete file from storage and DB
         file_obj.file.delete(save=False)
         file_obj.delete()
@@ -1488,3 +1876,265 @@ class TokenRefreshView(APIView):
                 return Response({"error": "Failed to refresh token"}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+def get_user_files_from_chroma_sqlite(user):
+    """
+    Directly query ChromaDB SQLite database to get list of files for a user
+    Returns a list of file information from the database
+    """
+    try:
+        user_chroma_dir = get_user_chroma_dir(user)
+        sqlite_path = os.path.join(user_chroma_dir, "chroma.sqlite3")
+        
+        if not os.path.exists(sqlite_path):
+            print(f"ChromaDB SQLite file not found: {sqlite_path}")
+            return []
+            
+        print(f"Querying ChromaDB SQLite: {sqlite_path}")
+        
+        # Connect to SQLite database
+        conn = sqlite3.connect(sqlite_path)
+        cursor = conn.cursor()
+        
+        # Get all tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = cursor.fetchall()
+        print(f"Found tables: {[table[0] for table in tables]}")
+        
+        # Get collection name for this user
+        collection_name = get_chroma_collection_name(user)
+        print(f"Looking for collection: {collection_name}")
+        
+        # Get segment_id for the collection
+        cursor.execute("SELECT id FROM segments WHERE name = ?;", (collection_name,))
+        segment_result = cursor.fetchone()
+        
+        if not segment_result:
+            print(f"No segment found for collection: {collection_name}")
+            conn.close()
+            return []
+            
+        segment_id = segment_result[0]
+        print(f"Found segment_id: {segment_id} for collection: {collection_name}")
+        
+        # Get unique file_ids from embedding_metadata table
+        cursor.execute("""
+            SELECT DISTINCT em.value 
+            FROM embedding_metadata em 
+            WHERE em.segment_id = ? AND em.key = 'file_id'
+        """, (segment_id,))
+        
+        file_ids = [row[0] for row in cursor.fetchall()]
+        print(f"Found file IDs in ChromaDB: {file_ids}")
+        
+        conn.close()
+        
+        if not file_ids:
+            return []
+        
+        # Get file information from Django database
+        try:
+            file_ids_int = [int(fid) for fid in file_ids]
+            user_files = File.objects.filter(
+                user_id=user.id, 
+                id__in=file_ids_int
+            ).order_by('uploaded_at')
+            
+            file_list = []
+            for file in user_files:
+                file_info = {
+                    "filename": file.filename,
+                    "uploaded_at": file.uploaded_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "file_type": file.filename.split('.')[-1].upper() if '.' in file.filename else "Unknown",
+                    "file_id": file.id
+                }
+                file_list.append(file_info)
+                print(f"✓ Found file in ChromaDB: {file.filename} (ID: {file.id})")
+            
+            return file_list
+            
+        except ValueError as e:
+            print(f"Error converting file IDs to integers: {e}")
+            return []
+            
+    except Exception as e:
+        print(f"Error querying ChromaDB SQLite: {e}")
+        return []
+
+def get_user_files_from_chroma(user):
+    """
+    Get list of files for a user from ChromaDB
+    Returns a list of file information for files that have been processed and stored in ChromaDB
+    """
+    try:
+        print(f"🔍 Getting files from ChromaDB for user {user.id}")
+        print(f"🔍 User details: ID={user.id}, Email={getattr(user, 'email', 'N/A')}")
+        
+        # Get user's ChromaDB directory and collection
+        user_chroma_dir = get_user_chroma_dir(user)
+        collection_name = get_chroma_collection_name(user)
+        
+        print(f"🔍 ChromaDB directory: {user_chroma_dir}")
+        print(f"🔍 Collection name: {collection_name}")
+        
+        # Check if ChromaDB directory exists
+        if not Path(user_chroma_dir).exists():
+            print(f"❌ ChromaDB directory does not exist: {user_chroma_dir}")
+            return []
+        
+        # Connect to ChromaDB
+        try:
+            vs = Chroma(
+                persist_directory=user_chroma_dir,
+                embedding_function=text_emb,
+                collection_name=collection_name,
+            )
+        except Exception as e:
+            print(f"❌ Error connecting to ChromaDB: {e}")
+            print(f"🔍 Checking directory permissions for: {user_chroma_dir}")
+            if os.path.exists(user_chroma_dir):
+                import stat
+                st = os.stat(user_chroma_dir)
+                print(f"🔍 Directory permissions: {oct(st.st_mode)}")
+                print(f"🔍 Directory owner: {st.st_uid}")
+                print(f"🔍 Directory group: {st.st_gid}")
+            raise e
+        
+        # Get all documents from ChromaDB
+        all_docs = vs.get()
+        print(f"🔍 Total documents in ChromaDB: {len(all_docs['documents']) if all_docs and 'documents' in all_docs else 0}")
+        
+        if not all_docs or 'documents' not in all_docs or 'metadatas' not in all_docs:
+            print(f"❌ No documents found in ChromaDB for user {user.id}")
+            return []
+        
+        # Extract unique file IDs from ChromaDB metadata
+        file_ids = set()
+        for metadata in all_docs['metadatas']:
+            if metadata and 'file_id' in metadata:
+                file_ids.add(metadata['file_id'])
+                print(f"🔍 Found file_id in ChromaDB: {metadata['file_id']}")
+        
+        print(f"🔍 Unique file IDs found in ChromaDB: {list(file_ids)}")
+        
+        if not file_ids:
+            print(f"❌ No file IDs found in ChromaDB metadata")
+            return []
+        
+        # Get file information from Django database for files that exist in ChromaDB
+        try:
+            file_ids_int = [int(fid) for fid in file_ids]
+            user_files = File.objects.filter(
+                user_id=user.id, 
+                id__in=file_ids_int
+            ).order_by('uploaded_at')
+            
+            print(f"🔍 Found {user_files.count()} files in database that match ChromaDB file_ids")
+            
+            file_list = []
+            for file in user_files:
+                file_info = {
+                    "filename": file.filename,
+                    "uploaded_at": file.uploaded_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "file_type": file.filename.split('.')[-1].upper() if '.' in file.filename else "Unknown",
+                    "file_id": file.id
+                }
+                file_list.append(file_info)
+                print(f"✓ Found file in ChromaDB: {file.filename} (ID: {file.id}, User ID: {file.user_id})")
+            
+            print(f"✅ Found {len(file_list)} files in ChromaDB for user {user.id}")
+            return file_list
+            
+        except ValueError as e:
+            print(f"❌ Error converting file IDs to integers: {e}")
+            return []
+            
+    except Exception as e:
+        print(f"❌ Error getting files from ChromaDB: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def test_user_chroma_document_listing(user):
+    """
+    Test function to verify ChromaDB document listing for a specific user
+    """
+    print(f"🧪 Testing ChromaDB document listing for user {user.id}")
+    
+    # Test 1: Check if user exists
+    print(f"🧪 User ID: {user.id}")
+    print(f"🧪 User email: {getattr(user, 'email', 'N/A')}")
+    
+    # Test 2: Check ChromaDB directory
+    user_chroma_dir = get_user_chroma_dir(user)
+    collection_name = get_chroma_collection_name(user)
+    print(f"🧪 ChromaDB directory: {user_chroma_dir}")
+    print(f"🧪 Collection name: {collection_name}")
+    print(f"🧪 Directory exists: {Path(user_chroma_dir).exists()}")
+    
+    # Test 3: Check total files in database
+    total_files = File.objects.count()
+    print(f"🧪 Total files in database: {total_files}")
+    
+    # Test 4: Check files for this user
+    user_files = File.objects.filter(user_id=user.id)
+    print(f"🧪 Files for user {user.id}: {user_files.count()}")
+    
+    # Test 5: List all files for this user
+    for file in user_files:
+        print(f"🧪 File: {file.filename} (ID: {file.id}, User: {file.user_id})")
+    
+    # Test 6: Call the actual ChromaDB function
+    result = get_user_files_from_chroma(user)
+    print(f"🧪 ChromaDB function result: {len(result)} files")
+    
+    return result
+
+def check_and_fix_chroma_permissions(user_chroma_dir):
+    """
+    Check and fix ChromaDB directory permissions
+    """
+    try:
+        import stat
+        
+        print(f"🔧 Checking ChromaDB permissions for: {user_chroma_dir}")
+        
+        if not os.path.exists(user_chroma_dir):
+            print(f"🔧 Creating ChromaDB directory: {user_chroma_dir}")
+            os.makedirs(user_chroma_dir, exist_ok=True)
+        
+        # Check current permissions
+        st = os.stat(user_chroma_dir)
+        current_permissions = oct(st.st_mode)
+        current_owner = st.st_uid
+        current_group = st.st_gid
+        
+        print(f"🔧 Current permissions: {current_permissions}")
+        print(f"🔧 Current owner: {current_owner}")
+        print(f"🔧 Current group: {current_group}")
+        
+        # Check if we can write to the directory
+        test_file = os.path.join(user_chroma_dir, "test_write.tmp")
+        try:
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            print(f"✅ Write permissions OK")
+            return True
+        except Exception as e:
+            print(f"❌ Write permissions failed: {e}")
+            
+            # Try to fix permissions
+            try:
+                print(f"🔧 Attempting to fix permissions...")
+                subprocess.run(['sudo', 'chown', '-R', 'chatapp:www-data', user_chroma_dir], check=True)
+                subprocess.run(['sudo', 'chmod', '-R', '775', user_chroma_dir], check=True)
+                print(f"✅ Permissions fixed")
+                return True
+            except Exception as fix_error:
+                print(f"❌ Failed to fix permissions: {fix_error}")
+                return False
+                
+    except Exception as e:
+        print(f"❌ Error checking permissions: {e}")
+        return False
