@@ -326,34 +326,17 @@ def run_rag_query(user, query, collection_name, llm=None, k=5):
 
 
 def run_rag_pipeline(user, query, chat_id=None):
-    # Check for document listing request first
-    query_lower = query.lower().strip()
-    document_list_keywords = [
-        'what documents', 'what are the documents', 'what files', 'what are the files',
-        'list documents', 'list files', 'show documents', 'show files',
-        'what documents do i have', 'what files do i have', 'my documents', 'my files',
-        'uploaded documents', 'uploaded files', 'documents i have', 'files i have',
-        'which documents', 'which files', 'tell me which documents', 'tell me which files',
-        'can you tell me which documents', 'can you tell me which files',
-        'what documents did i upload', 'what files did i upload',
-        'which documents did i upload', 'which files did i upload',
-        'show me my documents', 'show me my files', 'display my documents', 'display my files',
-        'what have i uploaded', 'what did i upload', 'my uploads', 'my uploaded files',
-        'can you list', 'list me', 'show me the', 'tell me the', 'what docs', 'what files',
-        'my docs', 'my files', 'documents list', 'files list', 'uploaded docs', 'uploaded files',
-        'available documents', 'available files', 'stored documents', 'stored files',
-        'give me the list', 'give me list', 'show me list', 'tell me list',
-        'what documents have i', 'what files have i', 'my document list', 'my file list',
-        'list of documents', 'list of files', 'documents list', 'files list',
-        'how many documents', 'how many files', 'count documents', 'count files'
-    ]
+    # Use OpenAI to intelligently categorize the user query
+    print(f"🤖 Starting intelligent query categorization for: '{query}'")
     
-    is_document_list_request = any(keyword in query_lower for keyword in document_list_keywords)
-    print(f"Query: '{query_lower}'")
-    print(f"Is document list request: {is_document_list_request}")
-    if is_document_list_request:
-        print("✅ Document list request detected!")
-        print(f"🔍 Keywords matched: {[keyword for keyword in document_list_keywords if keyword in query_lower]}")
+    # Categorize the query using OpenAI
+    query_category = categorize_user_query_with_openai(query)
+    
+    print(f"🎯 Query categorized as: {query_category}")
+    
+    # Handle document listing requests
+    if query_category == 'document_listing':
+        print("✅ Document listing request detected via OpenAI!")
     
     # Get conversation context if chat_id is provided
     conversation_context = ""
@@ -384,7 +367,7 @@ def run_rag_pipeline(user, query, chat_id=None):
             print(f"Error getting conversation context: {str(e)}")
 
     # Handle document listing request
-    if is_document_list_request:
+    if query_category == 'document_listing':
         try:
             print("🔍 Using ChromaDB query for document listing...")
             print(f"🔍 Current user in session: {user.id}")
@@ -464,9 +447,13 @@ def run_rag_pipeline(user, query, chat_id=None):
             print(f"Error listing documents: {str(e)}")
             return {"answer": "❌ I encountered an error while retrieving your document list. Please try again or contact support if the issue persists.", "sources": []}
 
-    # First, try to retrieve documents to assess confidence
-    collection_name = get_chroma_collection_name(user)
-    user_chroma_dir = get_user_chroma_dir(user)
+    # Handle document queries (asking questions about document content)
+    elif query_category == 'document_query':
+        print("🔍 Document query detected - using RAG pipeline...")
+        
+        # First, try to retrieve documents to assess confidence
+        collection_name = get_chroma_collection_name(user)
+        user_chroma_dir = get_user_chroma_dir(user)
     
     # Check if user has any documents
     if not Path(user_chroma_dir).exists():
@@ -565,9 +552,14 @@ def run_rag_pipeline(user, query, chat_id=None):
         else:
             print("No documents retrieved - returning no information message")
             return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
-    except Exception as e:
-        print(f"Error in document retrieval: {str(e)}")
-        return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
+            except Exception as e:
+            print(f"Error in document retrieval: {str(e)}")
+            return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
+    
+    # Handle unexpected categorization
+    else:
+        print(f"⚠️ Unexpected query category: {query_category}")
+        return {"answer": "I'm not sure how to handle your request. Please try asking about your documents or asking questions about their content.", "sources": []}
 
 
 from rest_framework.permissions import IsAuthenticated
@@ -2138,3 +2130,98 @@ def check_and_fix_chroma_permissions(user_chroma_dir):
     except Exception as e:
         print(f"❌ Error checking permissions: {e}")
         return False
+
+def categorize_user_query_with_openai(query):
+    """
+    Use OpenAI to categorize if the user is asking for document listing or asking questions about documents
+    Returns: 'document_listing' or 'document_query'
+    """
+    try:
+        # Create a prompt for OpenAI to categorize the query
+        categorization_prompt = f"""
+        Categorize the following user query into one of two categories:
+
+        1. 'document_listing' - User wants to see/list their uploaded documents
+        2. 'document_query' - User is asking questions about the content of their documents
+
+        Examples of 'document_listing':
+        - "What documents do I have?"
+        - "Show me my files"
+        - "List my documents"
+        - "What files have I uploaded?"
+        - "Give me the list of my documents"
+        - "How many documents do I have?"
+        - "Which documents are available?"
+
+        Examples of 'document_query':
+        - "What is the main topic of my documents?"
+        - "Summarize the key points"
+        - "Find information about AI in my documents"
+        - "What does my document say about machine learning?"
+        - "Tell me about the content of my files"
+        - "Search my documents for information about..."
+
+        User query: "{query}"
+
+        Respond with ONLY one word: either 'document_listing' or 'document_query'
+        """
+
+        # Use OpenAI to categorize
+        llm = ChatOpenAI(
+            model_name="gpt-4.1-mini", 
+            openai_api_key=settings.OPENAI_API_KEY, 
+            temperature=0.1
+        )
+        
+        response = llm.invoke(categorization_prompt)
+        category = response.content.strip().lower()
+        
+        print(f"🤖 OpenAI categorized query: '{query}' as: {category}")
+        
+        # Validate the response
+        if category in ['document_listing', 'document_query']:
+            return category
+        else:
+            print(f"⚠️ Unexpected categorization: {category}, defaulting to document_query")
+            return 'document_query'
+            
+    except Exception as e:
+        print(f"❌ Error in OpenAI categorization: {e}")
+        # Fallback to keyword-based detection
+        return categorize_query_with_keywords(query)
+
+def categorize_query_with_keywords(query):
+    """
+    Fallback keyword-based categorization
+    """
+    query_lower = query.lower().strip()
+    
+    # Keywords for document listing
+    document_listing_keywords = [
+        'what documents', 'what are the documents', 'what files', 'what are the files',
+        'list documents', 'list files', 'show documents', 'show files',
+        'what documents do i have', 'what files do i have', 'my documents', 'my files',
+        'uploaded documents', 'uploaded files', 'documents i have', 'files i have',
+        'which documents', 'which files', 'tell me which documents', 'tell me which files',
+        'can you tell me which documents', 'can you tell me which files',
+        'what documents did i upload', 'what files did i upload',
+        'which documents did i upload', 'which files did i upload',
+        'show me my documents', 'show me my files', 'display my documents', 'display my files',
+        'what have i uploaded', 'what did i upload', 'my uploads', 'my uploaded files',
+        'can you list', 'list me', 'show me the', 'tell me the', 'what docs', 'what files',
+        'my docs', 'my files', 'documents list', 'files list', 'uploaded docs', 'uploaded files',
+        'available documents', 'available files', 'stored documents', 'stored files',
+        'give me the list', 'give me list', 'show me list', 'tell me list',
+        'what documents have i', 'what files have i', 'my document list', 'my file list',
+        'list of documents', 'list of files', 'documents list', 'files list',
+        'how many documents', 'how many files', 'count documents', 'count files'
+    ]
+    
+    is_document_listing = any(keyword in query_lower for keyword in document_listing_keywords)
+    
+    if is_document_listing:
+        print(f"🔍 Keyword-based categorization: 'document_listing' for query: '{query}'")
+        return 'document_listing'
+    else:
+        print(f"🔍 Keyword-based categorization: 'document_query' for query: '{query}'")
+        return 'document_query'
