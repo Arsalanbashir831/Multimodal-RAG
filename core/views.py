@@ -552,9 +552,9 @@ def run_rag_pipeline(user, query, chat_id=None):
         else:
             print("No documents retrieved - returning no information message")
             return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
-            except Exception as e:
-            print(f"Error in document retrieval: {str(e)}")
-            return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
+    except Exception as e:
+                print(f"Error in document retrieval: {str(e)}")
+                return {"answer": "I'm not able to find information from your uploaded documents that answers your question. Please try rephrasing your question or ask about a different topic.", "sources": []}
     
     # Handle unexpected categorization
     else:
@@ -2133,7 +2133,7 @@ def check_and_fix_chroma_permissions(user_chroma_dir):
 
 def categorize_user_query_with_openai(query):
     """
-    Use OpenAI to categorize if the user is asking for document listing or asking questions about documents
+    Use OpenAI to categorize if the user is asking for document listing or asking questions about documents or the information we have in our database or maybe asking the general questions regarding the documents user has uploaded in their database 
     Returns: 'document_listing' or 'document_query'
     """
     try:
